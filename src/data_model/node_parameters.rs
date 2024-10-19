@@ -24,8 +24,7 @@
 
 #[allow(non_camel_case_types)]
 #[derive(strum_macros::Display)]
-pub enum NodeParameters
-{
+pub enum NodeParameters {
     Username,
     Password,
     Distr,

@@ -22,7 +22,7 @@
  * DEALINGS IN THE SOFTWARE.
  */
 
-pub mod result;
 pub mod connection_status;
 pub mod global_parameters;
 pub mod node_parameters;
+pub mod result;

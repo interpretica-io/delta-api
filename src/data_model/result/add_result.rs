@@ -22,7 +22,7 @@
  * DEALINGS IN THE SOFTWARE.
  */
 
-use serde::{Serialize, Deserialize};
+use serde::{Deserialize, Serialize};
 
 #[derive(Serialize, Deserialize, PartialEq, Clone, Debug)]
 pub enum AddResult {

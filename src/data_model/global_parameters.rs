@@ -24,8 +24,7 @@
 
 #[allow(non_camel_case_types)]
 #[derive(strum_macros::Display)]
-pub enum GlobalParameters
-{
+pub enum GlobalParameters {
     Distr_Linux_X86_64,
     Distr_Linux_ARM64,
     Distr_Mac_X86_64,

@@ -22,24 +22,23 @@
  * DEALINGS IN THE SOFTWARE.
  */
 
-use crate::data_model::result::remove_result::RemoveResult;
 use crate::data_model::connection_status::ConnectionStatus;
-use crate::data_model::result::connect_result::ConnectResult;
-use crate::data_model::result::disconnect_result::DisconnectResult;
-use crate::data_model::result::deploy_result::DeployResult;
-use crate::obj_model::node::Node;
 use crate::data_model::node_parameters::NodeParameters;
 use crate::data_model::result::add_result::AddResult;
-use std::io::Write;
-use std::path::Path;
+use crate::data_model::result::connect_result::ConnectResult;
+use crate::data_model::result::deploy_result::DeployResult;
+use crate::data_model::result::disconnect_result::DisconnectResult;
+use crate::data_model::result::remove_result::RemoveResult;
+use crate::obj_model::node::Node;
 use log::error;
 use log::info;
 use ssh2::Session;
 use std::collections::HashMap;
-use std::net::TcpStream;
 use std::fs::File;
+use std::io::Write;
 use std::io::{BufReader, Read};
-
+use std::net::TcpStream;
+use std::path::Path;
 
 pub struct NodePool {
     pub nodes: HashMap<String, Node>,
@@ -47,15 +46,16 @@ pub struct NodePool {
     pub str_params: HashMap<String, String>,
 }
 
-
-
 impl NodePool {
     pub fn new() -> NodePool {
-        return NodePool { nodes: HashMap::new(), sessions: HashMap::new(), str_params: HashMap::new() };
+        return NodePool {
+            nodes: HashMap::new(),
+            sessions: HashMap::new(),
+            str_params: HashMap::new(),
+        };
     }
 
-    pub fn get_node_param(&self, node: &Node, param: NodeParameters) -> String
-    {
+    pub fn get_node_param(&self, node: &Node, param: NodeParameters) -> String {
         let sparam = param.to_string();
         if node.str_params.contains_key(&sparam) {
             return node.str_params[&sparam].clone();
@@ -72,7 +72,7 @@ impl NodePool {
         &mut self,
         name: String,
         fqdn: String,
-        node_params: HashMap<String, String>
+        node_params: HashMap<String, String>,
     ) -> AddResult {
         if self.nodes.contains_key(&name) {
             error!("Node already exists: {}", name);
@@ -92,7 +92,9 @@ impl NodePool {
     }
 
     pub fn is_connected(&self, name: String) -> ConnectionStatus {
-        return ConnectionStatus { connected: self.sessions.contains_key(&name) }
+        return ConnectionStatus {
+            connected: self.sessions.contains_key(&name),
+        };
     }
 
     pub fn connect(&mut self, name: String) -> ConnectResult {
@@ -112,10 +114,10 @@ impl NodePool {
         sess.handshake().unwrap();
         let auth_result = sess.userauth_password(
             &self.get_node_param(node, NodeParameters::Username),
-            &self.get_node_param(node, NodeParameters::Password));
+            &self.get_node_param(node, NodeParameters::Password),
+        );
         match auth_result {
-            Ok(_r) => {
-            }
+            Ok(_r) => {}
             Err(e) => {
                 error!("Credentials not accepted: {} (error '{}')", name, e);
                 return ConnectResult::NotAuthenticated;
@@ -175,18 +177,23 @@ impl NodePool {
         let node = &self.nodes[&name];
         let sess = &self.sessions[&name];
 
-        if !self.upload_file(sess,
-                self.get_node_param(node, NodeParameters::Distr),
-                "/tmp/visao-archive.tar.xz".to_string()) {
+        if !self.upload_file(
+            sess,
+            self.get_node_param(node, NodeParameters::Distr),
+            "/tmp/visao-archive.tar.xz".to_string(),
+        ) {
             return DeployResult::CopyFailed;
         }
 
-        if self.execute(sess, "tar xvf /tmp/visao-archive.tar.xz -C /tmp/visao".to_string()) == "" {
+        if self.execute(
+            sess,
+            "tar xvf /tmp/visao-archive.tar.xz -C /tmp/visao".to_string(),
+        ) == ""
+        {
             return DeployResult::ExtractionFailed;
         }
 
         return DeployResult::Ok;
-
     }
 
     fn upload_file(&self, sess: &Session, local_path: String, remote_path: String) -> bool {
@@ -199,11 +206,10 @@ impl NodePool {
             }
         };
 
-        let remote_file = sess.scp_send(Path::new(&remote_path),
-            0o644, 10, None);
+        let remote_file = sess.scp_send(Path::new(&remote_path), 0o644, 10, None);
 
         match remote_file {
-            Ok(ref _n) => { }
+            Ok(ref _n) => {}
             Err(_e) => {
                 return false;
             }
@@ -215,7 +221,7 @@ impl NodePool {
         loop {
             let n = reader.read(&mut buffer);
             match n {
-                Ok(_n) => { }
+                Ok(_n) => {}
                 Err(_e) => {
                     break;
                 }
