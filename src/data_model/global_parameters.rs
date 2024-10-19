@@ -21,7 +21,15 @@
  * FROM, OUT OF OR IN CONNECTION WITH THE SOFTWARE OR THE USE OR OTHER
  * DEALINGS IN THE SOFTWARE.
  */
- 
-pub mod data_model;
-pub mod obj_model;
 
+#[allow(non_camel_case_types)]
+#[derive(strum_macros::Display)]
+pub enum GlobalParameters
+{
+    Distr_Linux_X86_64,
+    Distr_Linux_ARM64,
+    Distr_Mac_X86_64,
+    Distr_Mac_ARM64,
+    Distr_Win32_X86_64,
+    Distr_Win32_ARM64,
+}

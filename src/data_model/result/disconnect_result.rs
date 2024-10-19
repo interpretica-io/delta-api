@@ -21,7 +21,11 @@
  * FROM, OUT OF OR IN CONNECTION WITH THE SOFTWARE OR THE USE OR OTHER
  * DEALINGS IN THE SOFTWARE.
  */
- 
-pub mod data_model;
-pub mod obj_model;
 
+use serde::{Serialize, Deserialize};
+
+#[derive(Serialize, Deserialize, PartialEq, Clone, Debug)]
+pub enum DisconnectResult {
+    Ok,
+    NodeNotFound,
+}

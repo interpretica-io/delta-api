@@ -21,7 +21,23 @@
  * FROM, OUT OF OR IN CONNECTION WITH THE SOFTWARE OR THE USE OR OTHER
  * DEALINGS IN THE SOFTWARE.
  */
- 
-pub mod data_model;
-pub mod obj_model;
 
+use std::collections::HashMap;
+use serde::{Serialize, Deserialize};
+
+#[derive(Serialize, Deserialize, PartialEq, Clone, Debug)]
+#[repr(C)]
+pub struct Node {
+    pub fqdn: String,
+    pub str_params: HashMap<String, String>,
+}
+
+impl Node {
+    pub fn safe_str(&self, name: &str) -> String {
+        if self.str_params.contains_key(name) {
+            return self.str_params[name].clone();
+        }
+
+        return "".to_string();
+    }
+}

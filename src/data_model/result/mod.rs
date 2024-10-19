@@ -21,7 +21,9 @@
  * FROM, OUT OF OR IN CONNECTION WITH THE SOFTWARE OR THE USE OR OTHER
  * DEALINGS IN THE SOFTWARE.
  */
- 
-pub mod data_model;
-pub mod obj_model;
 
+pub mod add_result;
+pub mod connect_result;
+pub mod deploy_result;
+pub mod disconnect_result;
+pub mod remove_result;

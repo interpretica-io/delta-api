@@ -22,54 +22,24 @@
  * DEALINGS IN THE SOFTWARE.
  */
 
+use crate::data_model::result::remove_result::RemoveResult;
+use crate::data_model::connection_status::ConnectionStatus;
+use crate::data_model::result::connect_result::ConnectResult;
+use crate::data_model::result::disconnect_result::DisconnectResult;
+use crate::data_model::result::deploy_result::DeployResult;
+use crate::obj_model::node::Node;
+use crate::data_model::node_parameters::NodeParameters;
+use crate::data_model::result::add_result::AddResult;
 use std::io::Write;
 use std::path::Path;
 use log::error;
 use log::info;
-use serde::{Deserialize, Serialize};
 use ssh2::Session;
 use std::collections::HashMap;
 use std::net::TcpStream;
 use std::fs::File;
 use std::io::{BufReader, Read};
 
-#[allow(non_camel_case_types)]
-#[derive(strum_macros::Display)]
-pub enum GlobalParameters
-{
-    Distr_Linux_X86_64,
-    Distr_Linux_ARM64,
-    Distr_Mac_X86_64,
-    Distr_Mac_ARM64,
-    Distr_Win32_X86_64,
-    Distr_Win32_ARM64,
-}
-
-#[allow(non_camel_case_types)]
-#[derive(strum_macros::Display)]
-pub enum NodeParameters
-{
-    Username,
-    Password,
-    Distr,
-}
-
-#[derive(Serialize, Deserialize, PartialEq, Clone, Debug)]
-#[repr(C)]
-pub struct Node {
-    pub fqdn: String,
-    pub str_params: HashMap<String, String>,
-}
-
-impl Node {
-    pub fn safe_str(&self, name: &str) -> String {
-        if self.str_params.contains_key(name) {
-            return self.str_params[name].clone();
-        }
-
-        return "".to_string();
-    }
-}
 
 pub struct NodePool {
     pub nodes: HashMap<String, Node>,
@@ -77,44 +47,7 @@ pub struct NodePool {
     pub str_params: HashMap<String, String>,
 }
 
-#[derive(Serialize, Deserialize, PartialEq, Clone, Debug)]
-pub enum AddResult {
-    Ok,
-    NodeAlreadyExists,
-}
 
-#[derive(Serialize, Deserialize, PartialEq, Clone, Debug)]
-pub enum ConnectResult {
-    Ok,
-    NodeNotFound,
-    NotAuthenticated,
-}
-
-#[derive(Serialize, Deserialize, PartialEq, Clone, Debug)]
-pub enum DisconnectResult {
-    Ok,
-    NodeNotFound,
-}
-
-#[derive(Serialize, Deserialize, PartialEq, Clone, Debug)]
-pub enum RemoveResult {
-    Ok,
-    NodeNotFound,
-}
-
-#[derive(Serialize, Deserialize, PartialEq, Clone, Debug)]
-pub enum DeployResult {
-    Ok,
-    NodeNotFound,
-    NodeNotConnected,
-    CopyFailed,
-    ExtractionFailed,
-}
-
-#[derive(Serialize, Deserialize, PartialEq, Clone, Debug)]
-pub struct ConnectionStatus {
-    pub connected: bool,
-}
 
 impl NodePool {
     pub fn new() -> NodePool {
