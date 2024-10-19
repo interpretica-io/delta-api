@@ -22,21 +22,22 @@
  * DEALINGS IN THE SOFTWARE.
  */
 
+use std::collections::HashMap;
 use log::info;
 
 #[repr(C)]
-/// Plugin pool structure
 pub struct Connection {
     pub fqdn: String,
 }
 
 
 pub struct ConnectionPool {
-
+    pub connections: HashMap<String, Connection>,
 }
 
 impl ConnectionPool {
-    pub fn add_node(fqdn: String)  {
+    pub fn add_node(&mut self, name: String, fqdn: String)  {
         info!("Adding node {}", fqdn);
+        self.connections.insert(name, Connection { fqdn: fqdn });
     }
 }
