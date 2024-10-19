@@ -1,2 +1,3 @@
 # delta-api
-Delta API
+Delta API for Isabelle/Visao interaction
+
