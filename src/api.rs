@@ -22,3 +22,21 @@
  * DEALINGS IN THE SOFTWARE.
  */
 
+use log::info;
+
+#[repr(C)]
+/// Plugin pool structure
+pub struct Connection {
+    pub fqdn: String,
+}
+
+
+pub struct ConnectionPool {
+
+}
+
+impl ConnectionPool {
+    pub fn add_node(fqdn: String)  {
+        info!("Adding node {}", fqdn);
+    }
+}
