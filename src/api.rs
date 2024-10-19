@@ -33,18 +33,38 @@ use std::net::TcpStream;
 use std::fs::File;
 use std::io::{BufReader, Read};
 
+#[allow(non_camel_case_types)]
+#[derive(strum_macros::Display)]
+pub enum GlobalParameters
+{
+    Distr_Linux_X86_64,
+    Distr_Linux_ARM64,
+    Distr_Mac_X86_64,
+    Distr_Mac_ARM64,
+    Distr_Win32_X86_64,
+    Distr_Win32_ARM64,
+}
+
+#[allow(non_camel_case_types)]
+#[derive(strum_macros::Display)]
+pub enum NodeParameters
+{
+    Username,
+    Password,
+    Distr,
+}
+
 #[derive(Serialize, Deserialize, PartialEq, Clone, Debug)]
 #[repr(C)]
 pub struct Node {
     pub fqdn: String,
     pub str_params: HashMap<String, String>,
-    pub username: String,
-    pub password: String,
 }
 
 pub struct NodePool {
     pub nodes: HashMap<String, Node>,
     pub sessions: HashMap<String, Session>,
+    pub str_params: HashMap<String, String>,
 }
 
 #[derive(Serialize, Deserialize, PartialEq, Clone, Debug)]
@@ -82,12 +102,29 @@ pub enum DeployResult {
 }
 
 impl NodePool {
+    pub fn new() -> NodePool {
+        return NodePool { nodes: HashMap::new(), sessions: HashMap::new(), str_params: HashMap::new() };
+    }
+
+    pub fn get_node_param(&self, node: &Node, param: NodeParameters) -> String
+    {
+        let sparam = param.to_string();
+        if node.str_params.contains_key(&sparam) {
+            return node.str_params[&sparam].clone();
+        }
+
+        if self.str_params.contains_key(&sparam) {
+            return self.str_params[&sparam].clone();
+        }
+
+        return "".to_string();
+    }
+
     pub fn add(
         &mut self,
         name: String,
         fqdn: String,
-        username: String,
-        password: String,
+        node_params: HashMap<String, String>
     ) -> AddResult {
         if self.nodes.contains_key(&name) {
             error!("Node already exists: {}", name);
@@ -98,9 +135,7 @@ impl NodePool {
             name,
             Node {
                 fqdn: fqdn.clone(),
-                str_params: HashMap::new(),
-                username: username,
-                password: password,
+                str_params: node_params.clone(),
             },
         );
 
@@ -123,7 +158,8 @@ impl NodePool {
         let mut sess = Session::new().unwrap();
         sess.set_tcp_stream(tcp);
         sess.handshake().unwrap();
-        sess.userauth_password(&node.username.clone(), &node.password.clone())
+        sess.userauth_password(&self.get_node_param(node, NodeParameters::Username),
+            &self.get_node_param(node, NodeParameters::Password))
             .unwrap();
         if !sess.authenticated() {
             error!("Failed to authenticate: {}", name);
@@ -164,7 +200,7 @@ impl NodePool {
         return RemoveResult::Ok;
     }
 
-    pub fn deploy(&mut self, name: String, release_archive: String) -> DeployResult {
+    pub fn deploy(&mut self, name: String) -> DeployResult {
         if !self.nodes.contains_key(&name) {
             error!("Node doesn't exist: {}", name);
             return DeployResult::NodeNotFound;
@@ -175,9 +211,12 @@ impl NodePool {
             return DeployResult::NodeNotConnected;
         }
 
+        let node = &self.nodes[&name];
         let sess = &self.sessions[&name];
 
-        if !self.upload_file(sess, release_archive, "/tmp/visao-archive.tar.xz".to_string()) {
+        if !self.upload_file(sess,
+                self.get_node_param(node, NodeParameters::Distr),
+                "/tmp/visao-archive.tar.xz".to_string()) {
             return DeployResult::CopyFailed;
         }
 
@@ -189,9 +228,7 @@ impl NodePool {
 
     }
 
-    fn upload_file(&self, sess: &Session, local_path: String, remote_path: String) -> bool
-
-    {
+    fn upload_file(&self, sess: &Session, local_path: String, remote_path: String) -> bool {
         let file = File::open(local_path);
         let file = match file {
             Ok(f) => f,
@@ -238,8 +275,7 @@ impl NodePool {
         return true;
     }
 
-    fn execute(&self, sess: &Session, cmd: String) -> String
-    {
+    fn execute(&self, sess: &Session, cmd: String) -> String {
         let mut channel = sess.channel_session().unwrap();
         channel.exec(&cmd).unwrap();
         let mut s = String::new();
