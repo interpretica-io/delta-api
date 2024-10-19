@@ -22,22 +22,59 @@
  * DEALINGS IN THE SOFTWARE.
  */
 
+use std::net::TcpStream;
+use ssh2::Session;
 use std::collections::HashMap;
 use log::info;
+use serde::{Deserialize, Serialize};
 
+#[derive(Serialize, Deserialize, PartialEq, Clone, Debug)]
 #[repr(C)]
-pub struct Connection {
+pub struct Node {
     pub fqdn: String,
+    pub username: String,
+    pub password: String,
 }
 
-
-pub struct ConnectionPool {
-    pub connections: HashMap<String, Connection>,
+pub struct NodePool {
+    pub nodes: HashMap<String, Node>,
+    pub sessions: HashMap<String, Session>,
 }
 
-impl ConnectionPool {
-    pub fn add_node(&mut self, name: String, fqdn: String)  {
+#[derive(Serialize, Deserialize, PartialEq, Clone, Debug)]
+pub enum ConnectResult {
+    Ok,
+    NodeNotFound,
+    NotAuthenticated,
+}
+
+impl NodePool {
+    pub fn add_node(&mut self, name: String, fqdn: String, username: String, password: String)  {
         info!("Adding node {}", fqdn);
-        self.connections.insert(name, Connection { fqdn: fqdn });
+        self.nodes.insert(name, Node { fqdn: fqdn, username: username, password: password });
+    }
+
+    pub fn connect(&mut self, name: String) -> ConnectResult
+    {
+        if !self.nodes.contains_key(&name) {
+            return ConnectResult::NodeNotFound;
+        }
+
+        if self.sessions.contains_key(&name) {
+            self.sessions.remove(&name);
+        }
+
+        let node = &self.nodes[&name];
+        let tcp = TcpStream::connect(node.fqdn.clone()).unwrap();
+        let mut sess = Session::new().unwrap();
+        sess.set_tcp_stream(tcp);
+        sess.handshake().unwrap();
+        sess.userauth_password(&node.username.clone(), &node.password.clone()).unwrap();
+        if !sess.authenticated() {
+            return ConnectResult::NotAuthenticated;
+        }
+
+        self.sessions.insert(name, sess);
+        return ConnectResult::Ok;
     }
 }
