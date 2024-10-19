@@ -27,13 +27,20 @@ use serde::{Deserialize, Serialize};
 #[derive(Serialize, Deserialize, PartialEq, Clone, Debug)]
 pub struct ConnStatus {
     pub connected: bool,
+    pub deploy_archive_copied: bool,
+    pub deploy_archive_extracted: bool,
+    pub deploy_archive_tested: bool,
     pub deployed: bool,
-    pub extracted: bool,
     pub platform: String,
 }
 
 impl ConnStatus {
     pub fn new(connected: bool) -> ConnStatus {
-        return ConnStatus { connected: connected, deployed: false, extracted: false, platform: "".to_string() }
+        return ConnStatus { connected: connected,
+            deploy_archive_copied: false,
+            deploy_archive_extracted: false,
+            deploy_archive_tested: false,
+            deployed: false,
+            platform: "".to_string() }
     }
 }

@@ -29,6 +29,7 @@ pub enum DeployResult {
     Ok,
     NodeNotFound,
     NodeNotConnected,
-    CopyFailed,
-    ExtractionFailed,
+    DeployCopyFailed,
+    DeployExtractionFailed,
+    DeployTestFailed,
 }

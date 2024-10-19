@@ -131,7 +131,10 @@ impl NodePool {
             return ConnectResult::NotAuthenticated;
         }
 
-        self.instances.insert(name.clone(), Instance::new_ssh(sess, true));
+        let plat = self.execute(&sess, "uname -a".to_string());
+        let mut inst = Instance::new_ssh(sess, true);
+        inst.conn_status.platform = plat;
+        self.instances.insert(name.clone(), inst);
 
         info!("Connected node: {}", name);
         return ConnectResult::Ok;
@@ -181,22 +184,47 @@ impl NodePool {
         let node = &self.nodes[&name];
         let inst = &self.instances[&name];
 
+        let mut conn_status = inst.conn_status.clone();
+        conn_status.deployed = false;
+        conn_status.deploy_archive_copied = false;
+        conn_status.deploy_archive_extracted = false;
+        conn_status.deploy_archive_tested = false;
+
         if !self.upload_file(
             &inst.ssh_session.as_ref().unwrap(),
             self.get_node_param(node, NodeParameters::Distr),
             "/tmp/visao-archive.tar.xz".to_string(),
         ) {
-            return DeployResult::CopyFailed;
+            self.set_state(name, conn_status);
+            return DeployResult::DeployCopyFailed;
         }
+
+        conn_status.deploy_archive_copied = true;
 
         if self.execute(
             &inst.ssh_session.as_ref().unwrap(),
             "tar xvf /tmp/visao-archive.tar.xz -C /tmp/visao".to_string(),
         ) == ""
         {
-            return DeployResult::ExtractionFailed;
+            self.set_state(name, conn_status);
+            return DeployResult::DeployExtractionFailed;
         }
 
+        conn_status.deploy_archive_extracted = true;
+
+        if self.execute(
+            &inst.ssh_session.as_ref().unwrap(),
+            "/tmp/visao/bin/visao --version".to_string(),
+        ) == ""
+        {
+            self.set_state(name, conn_status);
+            return DeployResult::DeployTestFailed;
+        }
+
+        conn_status.deploy_archive_tested = true;
+
+        conn_status.deployed = true;
+        self.set_state(name, conn_status);
         return DeployResult::Ok;
     }
 
@@ -254,5 +282,11 @@ impl NodePool {
         let _ = channel.wait_close();
 
         return s;
+    }
+
+    fn set_state(&mut self, name: String, conn_status: ConnStatus)
+    {
+        let m = self.instances.get_mut(&name);
+        m.unwrap().conn_status = conn_status.clone();
     }
 }
