@@ -61,6 +61,16 @@ pub struct Node {
     pub str_params: HashMap<String, String>,
 }
 
+impl Node {
+    pub fn safe_str(&self, name: &str) -> String {
+        if self.str_params.contains_key(name) {
+            return self.str_params[name].clone();
+        }
+
+        return "".to_string();
+    }
+}
+
 pub struct NodePool {
     pub nodes: HashMap<String, Node>,
     pub sessions: HashMap<String, Session>,
@@ -99,6 +109,11 @@ pub enum DeployResult {
     NodeNotConnected,
     CopyFailed,
     ExtractionFailed,
+}
+
+#[derive(Serialize, Deserialize, PartialEq, Clone, Debug)]
+pub struct ConnectionStatus {
+    pub connected: bool,
 }
 
 impl NodePool {
@@ -143,6 +158,10 @@ impl NodePool {
         return AddResult::Ok;
     }
 
+    pub fn is_connected(&self, name: String) -> ConnectionStatus {
+        return ConnectionStatus { connected: self.sessions.contains_key(&name) }
+    }
+
     pub fn connect(&mut self, name: String) -> ConnectResult {
         if !self.nodes.contains_key(&name) {
             error!("Node doesn't exist: {}", name);
@@ -158,9 +177,18 @@ impl NodePool {
         let mut sess = Session::new().unwrap();
         sess.set_tcp_stream(tcp);
         sess.handshake().unwrap();
-        sess.userauth_password(&self.get_node_param(node, NodeParameters::Username),
-            &self.get_node_param(node, NodeParameters::Password))
-            .unwrap();
+        let auth_result = sess.userauth_password(
+            &self.get_node_param(node, NodeParameters::Username),
+            &self.get_node_param(node, NodeParameters::Password));
+        match auth_result {
+            Ok(_r) => {
+            }
+            Err(e) => {
+                error!("Credentials not accepted: {} (error '{}')", name, e);
+                return ConnectResult::NotAuthenticated;
+            }
+        }
+
         if !sess.authenticated() {
             error!("Failed to authenticate: {}", name);
             return ConnectResult::NotAuthenticated;
