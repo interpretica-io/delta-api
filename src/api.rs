@@ -42,16 +42,40 @@ pub struct NodePool {
 }
 
 #[derive(Serialize, Deserialize, PartialEq, Clone, Debug)]
+pub enum AddResult {
+    Ok,
+    NodeAlreadyExists
+}
+
+#[derive(Serialize, Deserialize, PartialEq, Clone, Debug)]
 pub enum ConnectResult {
     Ok,
     NodeNotFound,
     NotAuthenticated,
 }
 
+#[derive(Serialize, Deserialize, PartialEq, Clone, Debug)]
+pub enum DisconnectResult {
+    Ok,
+    NodeNotFound,
+}
+
+#[derive(Serialize, Deserialize, PartialEq, Clone, Debug)]
+pub enum RemoveResult {
+    Ok,
+    NodeNotFound,
+}
+
 impl NodePool {
-    pub fn add_node(&mut self, name: String, fqdn: String, username: String, password: String)  {
+    pub fn add_node(&mut self, name: String, fqdn: String, username: String, password: String) -> AddResult {
+        if self.nodes.contains_key(&name) {
+            return AddResult::NodeAlreadyExists;
+        }
+
         info!("Adding node {}", fqdn);
         self.nodes.insert(name, Node { fqdn: fqdn, username: username, password: password });
+
+        return AddResult::Ok;
     }
 
     pub fn connect(&mut self, name: String) -> ConnectResult
@@ -76,5 +100,30 @@ impl NodePool {
 
         self.sessions.insert(name, sess);
         return ConnectResult::Ok;
+    }
+
+    pub fn disconnect(&mut self, name: String) -> DisconnectResult
+    {
+        if !self.nodes.contains_key(&name) {
+            return DisconnectResult::NodeNotFound;
+        }
+
+        if self.sessions.contains_key(&name) {
+            self.sessions.remove(&name);
+        }
+        return DisconnectResult::Ok;
+    }
+
+    pub fn remove(&mut self, name: String) -> RemoveResult
+    {
+        if !self.nodes.contains_key(&name) {
+            return RemoveResult::NodeNotFound;
+        }
+
+        if self.sessions.contains_key(&name) {
+            self.sessions.remove(&name);
+        }
+
+        return RemoveResult::Ok;
     }
 }
