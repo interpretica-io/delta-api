@@ -25,6 +25,7 @@
 use serde::{Deserialize, Serialize};
 
 #[derive(Serialize, Deserialize, PartialEq, Clone, Debug)]
-pub struct ConnectionStatus {
-    pub connected: bool,
+pub enum ConnMethod {
+    None,
+    Ssh,
 }

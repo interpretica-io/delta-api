@@ -22,7 +22,8 @@
  * DEALINGS IN THE SOFTWARE.
  */
 
-use crate::data_model::connection_status::ConnectionStatus;
+use crate::data_model::instance::Instance;
+use crate::data_model::conn_status::ConnStatus;
 use crate::data_model::node_parameters::NodeParameters;
 use crate::data_model::result::add_result::AddResult;
 use crate::data_model::result::connect_result::ConnectResult;
@@ -42,7 +43,7 @@ use std::path::Path;
 
 pub struct NodePool {
     pub nodes: HashMap<String, Node>,
-    pub sessions: HashMap<String, Session>,
+    pub instances: HashMap<String, Instance>,
     pub str_params: HashMap<String, String>,
 }
 
@@ -50,7 +51,7 @@ impl NodePool {
     pub fn new() -> NodePool {
         return NodePool {
             nodes: HashMap::new(),
-            sessions: HashMap::new(),
+            instances: HashMap::new(),
             str_params: HashMap::new(),
         };
     }
@@ -91,10 +92,11 @@ impl NodePool {
         return AddResult::Ok;
     }
 
-    pub fn is_connected(&self, name: String) -> ConnectionStatus {
-        return ConnectionStatus {
-            connected: self.sessions.contains_key(&name),
-        };
+    pub fn is_connected(&self, name: String) -> ConnStatus {
+        if self.instances.contains_key(&name) {
+            return self.instances[&name].conn_status.clone();
+        }
+        return ConnStatus::new(false);
     }
 
     pub fn connect(&mut self, name: String) -> ConnectResult {
@@ -103,8 +105,8 @@ impl NodePool {
             return ConnectResult::NodeNotFound;
         }
 
-        if self.sessions.contains_key(&name) {
-            self.sessions.remove(&name);
+        if self.instances.contains_key(&name) {
+            self.instances.remove(&name);
         }
 
         let node = &self.nodes[&name];
@@ -129,7 +131,7 @@ impl NodePool {
             return ConnectResult::NotAuthenticated;
         }
 
-        self.sessions.insert(name.clone(), sess);
+        self.instances.insert(name.clone(), Instance::new_ssh(sess, true));
 
         info!("Connected node: {}", name);
         return ConnectResult::Ok;
@@ -141,8 +143,8 @@ impl NodePool {
             return DisconnectResult::NodeNotFound;
         }
 
-        if self.sessions.contains_key(&name) {
-            self.sessions.remove(&name);
+        if self.instances.contains_key(&name) {
+            self.instances.remove(&name);
         }
 
         info!("Disconnected node: {}", name);
@@ -155,8 +157,10 @@ impl NodePool {
             return RemoveResult::NodeNotFound;
         }
 
-        if self.sessions.contains_key(&name) {
-            self.sessions.remove(&name);
+        self.nodes.remove(&name);
+
+        if self.instances.contains_key(&name) {
+            self.instances.remove(&name);
         }
 
         info!("Removed node: {}", name);
@@ -169,16 +173,16 @@ impl NodePool {
             return DeployResult::NodeNotFound;
         }
 
-        if !self.sessions.contains_key(&name) {
+        if !self.instances.contains_key(&name) {
             error!("Node not connected: {}", name);
             return DeployResult::NodeNotConnected;
         }
 
         let node = &self.nodes[&name];
-        let sess = &self.sessions[&name];
+        let inst = &self.instances[&name];
 
         if !self.upload_file(
-            sess,
+            &inst.ssh_session.as_ref().unwrap(),
             self.get_node_param(node, NodeParameters::Distr),
             "/tmp/visao-archive.tar.xz".to_string(),
         ) {
@@ -186,7 +190,7 @@ impl NodePool {
         }
 
         if self.execute(
-            sess,
+            &inst.ssh_session.as_ref().unwrap(),
             "tar xvf /tmp/visao-archive.tar.xz -C /tmp/visao".to_string(),
         ) == ""
         {

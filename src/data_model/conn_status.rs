@@ -22,9 +22,18 @@
  * DEALINGS IN THE SOFTWARE.
  */
 
-pub mod result;
-pub mod conn_method;
-pub mod conn_status;
-pub mod global_parameters;
-pub mod instance;
-pub mod node_parameters;
+use serde::{Deserialize, Serialize};
+
+#[derive(Serialize, Deserialize, PartialEq, Clone, Debug)]
+pub struct ConnStatus {
+    pub connected: bool,
+    pub deployed: bool,
+    pub extracted: bool,
+    pub platform: String,
+}
+
+impl ConnStatus {
+    pub fn new(connected: bool) -> ConnStatus {
+        return ConnStatus { connected: connected, deployed: false, extracted: false, platform: "".to_string() }
+    }
+}

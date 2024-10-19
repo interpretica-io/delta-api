@@ -22,9 +22,23 @@
  * DEALINGS IN THE SOFTWARE.
  */
 
-pub mod result;
-pub mod conn_method;
-pub mod conn_status;
-pub mod global_parameters;
-pub mod instance;
-pub mod node_parameters;
+use ssh2::Session;
+use crate::data_model::conn_method::*;
+use crate::data_model::conn_status::*;
+
+#[repr(C)]
+pub struct Instance {
+    pub conn_method: ConnMethod,
+    pub conn_status: ConnStatus,
+    pub ssh_session: Option<Session>,
+}
+
+
+impl Instance {
+    pub fn new_ssh(session: Session, connected: bool) -> Instance {
+        return Instance { conn_method: ConnMethod::Ssh,
+            conn_status: ConnStatus::new(connected),
+            ssh_session: Some(session)
+        };
+    }
+}
