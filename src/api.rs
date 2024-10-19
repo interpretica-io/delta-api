@@ -22,17 +22,22 @@
  * DEALINGS IN THE SOFTWARE.
  */
 
+use std::io::Write;
+use std::path::Path;
 use log::error;
 use log::info;
 use serde::{Deserialize, Serialize};
 use ssh2::Session;
 use std::collections::HashMap;
 use std::net::TcpStream;
+use std::fs::File;
+use std::io::{BufReader, Read};
 
 #[derive(Serialize, Deserialize, PartialEq, Clone, Debug)]
 #[repr(C)]
 pub struct Node {
     pub fqdn: String,
+    pub str_params: HashMap<String, String>,
     pub username: String,
     pub password: String,
 }
@@ -67,6 +72,15 @@ pub enum RemoveResult {
     NodeNotFound,
 }
 
+#[derive(Serialize, Deserialize, PartialEq, Clone, Debug)]
+pub enum DeployResult {
+    Ok,
+    NodeNotFound,
+    NodeNotConnected,
+    CopyFailed,
+    ExtractionFailed,
+}
+
 impl NodePool {
     pub fn add(
         &mut self,
@@ -84,6 +98,7 @@ impl NodePool {
             name,
             Node {
                 fqdn: fqdn.clone(),
+                str_params: HashMap::new(),
                 username: username,
                 password: password,
             },
@@ -147,5 +162,90 @@ impl NodePool {
 
         info!("Removed node: {}", name);
         return RemoveResult::Ok;
+    }
+
+    pub fn deploy(&mut self, name: String, release_archive: String) -> DeployResult {
+        if !self.nodes.contains_key(&name) {
+            error!("Node doesn't exist: {}", name);
+            return DeployResult::NodeNotFound;
+        }
+
+        if !self.sessions.contains_key(&name) {
+            error!("Node not connected: {}", name);
+            return DeployResult::NodeNotConnected;
+        }
+
+        let sess = &self.sessions[&name];
+
+        if !self.upload_file(sess, release_archive, "/tmp/visao-archive.tar.xz".to_string()) {
+            return DeployResult::CopyFailed;
+        }
+
+        if self.execute(sess, "tar xvf /tmp/visao-archive.tar.xz -C /tmp/visao".to_string()) == "" {
+            return DeployResult::ExtractionFailed;
+        }
+
+        return DeployResult::Ok;
+
+    }
+
+    fn upload_file(&self, sess: &Session, local_path: String, remote_path: String) -> bool
+
+    {
+        let file = File::open(local_path);
+        let file = match file {
+            Ok(f) => f,
+            Err(e) => {
+                eprintln!("Failed to open local file: {}", e);
+                return false;
+            }
+        };
+
+        let remote_file = sess.scp_send(Path::new(&remote_path),
+            0o644, 10, None);
+
+        match remote_file {
+            Ok(ref _n) => { }
+            Err(_e) => {
+                return false;
+            }
+        }
+
+        let mut remote_file = remote_file.unwrap();
+        let mut reader = BufReader::new(file);
+        let mut buffer = vec![0; 4096];
+        loop {
+            let n = reader.read(&mut buffer);
+            match n {
+                Ok(_n) => { }
+                Err(_e) => {
+                    break;
+                }
+            }
+
+            let n = n.unwrap();
+            if n == 0 {
+                break;
+            }
+
+            let _ = remote_file.write_all(&buffer[..n]);
+        }
+
+        remote_file.send_eof().unwrap();
+        remote_file.wait_eof().unwrap();
+        remote_file.close().unwrap();
+        remote_file.wait_close().unwrap();
+        return true;
+    }
+
+    fn execute(&self, sess: &Session, cmd: String) -> String
+    {
+        let mut channel = sess.channel_session().unwrap();
+        channel.exec(&cmd).unwrap();
+        let mut s = String::new();
+        channel.read_to_string(&mut s).unwrap();
+        let _ = channel.wait_close();
+
+        return s;
     }
 }
