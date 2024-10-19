@@ -22,12 +22,12 @@
  * DEALINGS IN THE SOFTWARE.
  */
 
-use std::net::TcpStream;
-use ssh2::Session;
-use std::collections::HashMap;
 use log::error;
 use log::info;
 use serde::{Deserialize, Serialize};
+use ssh2::Session;
+use std::collections::HashMap;
+use std::net::TcpStream;
 
 #[derive(Serialize, Deserialize, PartialEq, Clone, Debug)]
 #[repr(C)]
@@ -45,7 +45,7 @@ pub struct NodePool {
 #[derive(Serialize, Deserialize, PartialEq, Clone, Debug)]
 pub enum AddResult {
     Ok,
-    NodeAlreadyExists
+    NodeAlreadyExists,
 }
 
 #[derive(Serialize, Deserialize, PartialEq, Clone, Debug)]
@@ -68,20 +68,32 @@ pub enum RemoveResult {
 }
 
 impl NodePool {
-    pub fn add(&mut self, name: String, fqdn: String, username: String, password: String) -> AddResult {
+    pub fn add(
+        &mut self,
+        name: String,
+        fqdn: String,
+        username: String,
+        password: String,
+    ) -> AddResult {
         if self.nodes.contains_key(&name) {
             error!("Node already exists: {}", name);
             return AddResult::NodeAlreadyExists;
         }
 
-        self.nodes.insert(name, Node { fqdn: fqdn.clone(), username: username, password: password });
+        self.nodes.insert(
+            name,
+            Node {
+                fqdn: fqdn.clone(),
+                username: username,
+                password: password,
+            },
+        );
 
         info!("Added node {}", fqdn);
         return AddResult::Ok;
     }
 
-    pub fn connect(&mut self, name: String) -> ConnectResult
-    {
+    pub fn connect(&mut self, name: String) -> ConnectResult {
         if !self.nodes.contains_key(&name) {
             error!("Node doesn't exist: {}", name);
             return ConnectResult::NodeNotFound;
@@ -96,7 +108,8 @@ impl NodePool {
         let mut sess = Session::new().unwrap();
         sess.set_tcp_stream(tcp);
         sess.handshake().unwrap();
-        sess.userauth_password(&node.username.clone(), &node.password.clone()).unwrap();
+        sess.userauth_password(&node.username.clone(), &node.password.clone())
+            .unwrap();
         if !sess.authenticated() {
             error!("Failed to authenticate: {}", name);
             return ConnectResult::NotAuthenticated;
@@ -108,8 +121,7 @@ impl NodePool {
         return ConnectResult::Ok;
     }
 
-    pub fn disconnect(&mut self, name: String) -> DisconnectResult
-    {
+    pub fn disconnect(&mut self, name: String) -> DisconnectResult {
         if !self.nodes.contains_key(&name) {
             error!("Node doesn't exist: {}", name);
             return DisconnectResult::NodeNotFound;
@@ -123,8 +135,7 @@ impl NodePool {
         return DisconnectResult::Ok;
     }
 
-    pub fn remove(&mut self, name: String) -> RemoveResult
-    {
+    pub fn remove(&mut self, name: String) -> RemoveResult {
         if !self.nodes.contains_key(&name) {
             error!("Node doesn't exist: {}", name);
             return RemoveResult::NodeNotFound;
