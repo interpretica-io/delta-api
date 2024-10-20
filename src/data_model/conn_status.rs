@@ -22,25 +22,55 @@
  * DEALINGS IN THE SOFTWARE.
  */
 
+use crate::data_model::deploy_subject::DeploySubject;
+use std::collections::HashMap;
 use serde::{Deserialize, Serialize};
 
 #[derive(Serialize, Deserialize, PartialEq, Clone, Debug)]
-pub struct ConnStatus {
-    pub connected: bool,
+pub struct SubjectStatus {
     pub deploy_archive_copied: bool,
     pub deploy_archive_extracted: bool,
     pub deploy_archive_tested: bool,
     pub deployed: bool,
+    pub running: bool,
+}
+
+impl SubjectStatus {
+    pub fn new() -> SubjectStatus {
+        return SubjectStatus {
+            deploy_archive_copied: false,
+            deploy_archive_extracted: false,
+            deploy_archive_tested: false,
+            deployed: false,
+            running: false,
+        };
+    }
+}
+
+#[derive(Serialize, Deserialize, PartialEq, Clone, Debug)]
+pub struct ConnStatus {
+    pub connected: bool,
+    pub subjects: HashMap<DeploySubject, SubjectStatus>,
     pub platform: String,
 }
 
 impl ConnStatus {
     pub fn new(connected: bool) -> ConnStatus {
         return ConnStatus { connected: connected,
-            deploy_archive_copied: false,
-            deploy_archive_extracted: false,
-            deploy_archive_tested: false,
-            deployed: false,
+            subjects: HashMap::new(),
             platform: "".to_string() }
+    }
+
+    pub fn get_subject(&mut self, subject: DeploySubject) -> SubjectStatus {
+        if !self.subjects.contains_key(&subject) {
+            return SubjectStatus::new();
+        }
+
+        return self.subjects[&subject].clone();
+    }
+
+    pub fn set_subject(&mut self, subject: DeploySubject, status: SubjectStatus) {
+        let m = self.subjects.get_mut(&subject);
+        *m.unwrap() = status;
     }
 }

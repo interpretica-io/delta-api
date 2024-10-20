@@ -22,10 +22,12 @@
  * DEALINGS IN THE SOFTWARE.
  */
 
-pub mod result;
-pub mod conn_method;
-pub mod conn_status;
-pub mod deploy_subject;
-pub mod global_parameters;
-pub mod instance;
-pub mod node_parameters;
+use serde::{Deserialize, Serialize};
+
+#[derive(Serialize, Deserialize, PartialEq, Clone, Debug)]
+pub enum RunResult {
+    Ok,
+    NodeNotFound,
+    NodeNotConnected,
+    RunFailed,
+}

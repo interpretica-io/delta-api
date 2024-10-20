@@ -22,6 +22,8 @@
  * DEALINGS IN THE SOFTWARE.
  */
 
+use crate::data_model::deploy_subject::DeploySubject;
+use crate::data_model::result::run_result::RunResult;
 use crate::data_model::instance::Instance;
 use crate::data_model::conn_status::ConnStatus;
 use crate::data_model::node_parameters::NodeParameters;
@@ -170,7 +172,13 @@ impl NodePool {
         return RemoveResult::Ok;
     }
 
-    pub fn deploy(&mut self, name: String) -> DeployResult {
+    pub fn deploy(&mut self, name: String, subject: DeploySubject) -> DeployResult {
+        if subject == DeploySubject::Delta {
+            return DeployResult::InvalidArgument;
+        }
+
+        // Deploy Sa
+
         if !self.nodes.contains_key(&name) {
             error!("Node doesn't exist: {}", name);
             return DeployResult::NodeNotFound;
@@ -185,49 +193,87 @@ impl NodePool {
         let inst = &self.instances[&name];
 
         let mut conn_status = inst.conn_status.clone();
-        conn_status.deployed = false;
-        conn_status.deploy_archive_copied = false;
-        conn_status.deploy_archive_extracted = false;
-        conn_status.deploy_archive_tested = false;
+        let mut subject_st = conn_status.get_subject(subject.clone());
+
+        subject_st.deployed = false;
+        subject_st.deploy_archive_copied = false;
+        subject_st.deploy_archive_extracted = false;
+        subject_st.deploy_archive_tested = false;
 
         if !self.upload_file(
             &inst.ssh_session.as_ref().unwrap(),
             self.get_node_param(node, NodeParameters::Distr),
             "/tmp/visao-archive.tar.xz".to_string(),
         ) {
+            conn_status.set_subject(subject, subject_st);
             self.set_state(name, conn_status);
             return DeployResult::DeployCopyFailed;
         }
 
-        conn_status.deploy_archive_copied = true;
+        subject_st.deploy_archive_copied = true;
 
         if self.execute(
             &inst.ssh_session.as_ref().unwrap(),
             "tar xvf /tmp/visao-archive.tar.xz -C /tmp/visao".to_string(),
         ) == ""
         {
+            conn_status.set_subject(subject, subject_st);
             self.set_state(name, conn_status);
             return DeployResult::DeployExtractionFailed;
         }
 
-        conn_status.deploy_archive_extracted = true;
+        subject_st.deploy_archive_extracted = true;
 
         if self.execute(
             &inst.ssh_session.as_ref().unwrap(),
             "/tmp/visao/bin/visao --version".to_string(),
         ) == ""
         {
+            conn_status.set_subject(subject, subject_st);
             self.set_state(name, conn_status);
             return DeployResult::DeployTestFailed;
         }
 
-        conn_status.deploy_archive_tested = true;
+        subject_st.deploy_archive_tested = true;
 
-        conn_status.deployed = true;
+        subject_st.deployed = true;
+        conn_status.set_subject(subject, subject_st);
         self.set_state(name, conn_status);
         return DeployResult::Ok;
     }
 
+    pub fn run(&mut self, name: String, subject: DeploySubject) -> RunResult {
+        if !self.nodes.contains_key(&name) {
+            error!("Node doesn't exist: {}", name);
+            return RunResult::NodeNotFound;
+        }
+
+        if !self.instances.contains_key(&name) {
+            error!("Node not connected: {}", name);
+            return RunResult::NodeNotConnected;
+        }
+
+        let inst = &self.instances[&name];
+
+        let mut conn_status = inst.conn_status.clone();
+        let mut subject_st = conn_status.get_subject(subject.clone());
+
+        subject_st.running = false;
+
+        if self.execute(
+            &inst.ssh_session.as_ref().unwrap(),
+            "/bin/bash -c \"kill $(cat /tmp/visao/pid) ; ./build/fs/bin/visao --server tcp://127.0.0.1:5700 & > /dev/null 2> /dev/null ; echo $! > /tmp/visao/pid\"".to_string()
+            ) == "" {
+            conn_status.set_subject(subject, subject_st);
+            self.set_state(name, conn_status);
+            return RunResult::RunFailed;
+        }
+
+        subject_st.running = true;
+        conn_status.set_subject(subject, subject_st);
+        self.set_state(name, conn_status);
+        return RunResult::Ok;
+    }
     fn upload_file(&self, sess: &Session, local_path: String, remote_path: String) -> bool {
         let file = File::open(local_path);
         let file = match file {

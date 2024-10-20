@@ -27,6 +27,7 @@ use serde::{Deserialize, Serialize};
 #[derive(Serialize, Deserialize, PartialEq, Clone, Debug)]
 pub enum DeployResult {
     Ok,
+    InvalidArgument,
     NodeNotFound,
     NodeNotConnected,
     DeployCopyFailed,

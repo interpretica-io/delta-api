@@ -22,10 +22,15 @@
  * DEALINGS IN THE SOFTWARE.
  */
 
-pub mod result;
-pub mod conn_method;
-pub mod conn_status;
-pub mod deploy_subject;
-pub mod global_parameters;
-pub mod instance;
-pub mod node_parameters;
+
+use serde::{Serialize, Deserialize};
+
+#[allow(non_camel_case_types)]
+#[derive(strum_macros::Display)]
+#[derive(Serialize, Deserialize, PartialEq, Clone, Debug)]
+#[derive(Eq)]
+#[derive(Hash)]
+pub enum DeploySubject {
+    Sa,
+    Delta,
+}
