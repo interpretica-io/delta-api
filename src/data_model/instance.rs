@@ -33,6 +33,7 @@ pub struct Instance {
     pub ssh_session: Option<Session>,
 }
 
+unsafe impl Send for Instance {}
 
 impl Instance {
     pub fn new_ssh(session: Session, connected: bool) -> Instance {

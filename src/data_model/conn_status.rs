@@ -35,6 +35,8 @@ pub struct SubjectStatus {
     pub running: bool,
 }
 
+unsafe impl Send for SubjectStatus {}
+
 impl SubjectStatus {
     pub fn new() -> SubjectStatus {
         return SubjectStatus {
