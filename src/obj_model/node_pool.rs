@@ -50,6 +50,8 @@ pub struct NodePool {
     pub str_params: HashMap<String, String>,
 }
 
+unsafe impl Send for NodePool {}
+
 impl NodePool {
     pub fn new() -> NodePool {
         return NodePool {

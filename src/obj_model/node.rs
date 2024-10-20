@@ -32,6 +32,8 @@ pub struct Node {
     pub str_params: HashMap<String, String>,
 }
 
+unsafe impl Send for Node {}
+
 impl Node {
     pub fn safe_str(&self, name: &str) -> String {
         if self.str_params.contains_key(name) {
