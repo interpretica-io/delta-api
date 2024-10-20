@@ -28,4 +28,6 @@ pub enum NodeParameters {
     Username,
     Password,
     Distr,
+    BindAddr,
+    BindPort,
 }

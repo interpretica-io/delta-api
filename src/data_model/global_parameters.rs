@@ -31,4 +31,6 @@ pub enum GlobalParameters {
     Distr_Mac_ARM64,
     Distr_Win32_X86_64,
     Distr_Win32_ARM64,
+    BindAddr,
+    BindPort,
 }
