@@ -22,6 +22,7 @@
  * DEALINGS IN THE SOFTWARE.
  */
 
+use crate::data_model::conn_alive_status::ConnAliveStatus;
 use crate::data_model::deploy_subject::DeploySubject;
 use crate::data_model::result::run_result::RunResult;
 use crate::data_model::instance::Instance;
@@ -99,6 +100,32 @@ impl NodePool {
             return self.instances[&name].conn_status.clone();
         }
         return ConnStatus::new(false);
+    }
+
+    pub fn is_alive(&self, name: String) -> ConnAliveStatus {
+        let mut conn_alive_status = ConnAliveStatus::new();
+
+        if self.instances.contains_key(&name) {
+            let inst = &self.instances[&name];
+            let ssh_session = &inst.ssh_session.as_ref().unwrap();
+            let pid = self.execute(ssh_session, "cat /tmp/visao/pid".to_string());
+            if pid.trim().parse::<u64>().is_ok() {
+                let runs = self.execute(ssh_session, format!("kill -0 {} && echo runs", pid.trim()));
+                if runs.contains("runs")
+                {
+                    let bind_addr = self.execute(ssh_session, "cat /tmp/visao/bind_addr".to_string());
+                    let bind_port = self.execute(ssh_session, "cat /tmp/visao/bind_port".to_string());
+
+                    if bind_port.trim().parse::<u16>().is_ok() {
+                        conn_alive_status.alive = true;
+                        conn_alive_status.bind_addr = bind_addr.trim().to_string();
+                        conn_alive_status.bind_port = bind_port.trim().parse::<u16>().unwrap();
+                    }
+                }
+            }
+        }
+
+        return conn_alive_status;
     }
 
     pub fn connect(&mut self, name: String) -> ConnectResult {
@@ -294,6 +321,7 @@ impl NodePool {
         self.set_state(name, conn_status);
         return RunResult::Ok;
     }
+
     fn upload_file(&self, sess: &Session, local_path: String, remote_path: String) -> bool {
         let file = File::open(local_path);
         let file = match file {

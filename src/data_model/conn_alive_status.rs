@@ -22,11 +22,21 @@
  * DEALINGS IN THE SOFTWARE.
  */
 
-pub mod result;
-pub mod conn_alive_status;
-pub mod conn_method;
-pub mod conn_status;
-pub mod deploy_subject;
-pub mod global_parameters;
-pub mod instance;
-pub mod node_parameters;
+use serde::{Deserialize, Serialize};
+
+#[derive(Serialize, Deserialize, PartialEq, Clone, Debug)]
+pub struct ConnAliveStatus {
+    pub alive: bool,
+    pub bind_addr: String,
+    pub bind_port: u16,
+}
+
+impl ConnAliveStatus {
+    pub fn new() -> ConnAliveStatus {
+        return ConnAliveStatus {
+            alive: false,
+            bind_addr: "".to_string(),
+            bind_port: 0,
+        };
+    }
+}
