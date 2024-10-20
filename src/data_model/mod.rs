@@ -28,5 +28,7 @@ pub mod conn_method;
 pub mod conn_status;
 pub mod deploy_subject;
 pub mod global_parameters;
+#[cfg(feature = "object_model")]
 pub mod instance;
+
 pub mod node_parameters;

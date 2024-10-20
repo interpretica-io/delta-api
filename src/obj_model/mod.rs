@@ -22,5 +22,8 @@
  * DEALINGS IN THE SOFTWARE.
  */
 
+#[cfg(feature = "object_model")]
+
 pub mod node;
+#[cfg(feature = "object_model")]
 pub mod node_pool;

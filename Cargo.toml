@@ -1,12 +1,15 @@
 [package]
 name = "delta-api"
-version = "1.0.0"
+version = "1.1.0"
 edition = "2021"
 
 [dependencies]
 serde = { version = "1.0", features = ["derive"] }
 serde_json = "1.0"
-libloading = "0.8.3"
-log = "0.4.0"
-ssh2 = "0.9.4"
 strum_macros = "0.26.4"
+log = { version = "0.4.0", optional = true }
+ssh2 = { version = "0.9.4", optional = true }
+
+[features]
+object_model = [ "log", "ssh2" ]
+
