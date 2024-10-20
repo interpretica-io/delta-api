@@ -22,21 +22,36 @@
  * DEALINGS IN THE SOFTWARE.
  */
 
+use crate::data_model::deploy_subject::DeploySubject;
+use std::collections::HashMap;
 use serde::{Deserialize, Serialize};
 
 #[derive(Serialize, Deserialize, PartialEq, Clone, Debug)]
-pub struct ConnAliveStatus {
+pub struct SubjectAliveStatus {
     pub alive: bool,
     pub bind_addr: String,
     pub bind_port: u16,
 }
 
-impl ConnAliveStatus {
-    pub fn new() -> ConnAliveStatus {
-        return ConnAliveStatus {
+impl SubjectAliveStatus {
+    pub fn new() -> SubjectAliveStatus {
+        return SubjectAliveStatus {
             alive: false,
             bind_addr: "".to_string(),
             bind_port: 0,
+        };
+    }
+}
+
+#[derive(Serialize, Deserialize, PartialEq, Clone, Debug)]
+pub struct ConnAliveStatus {
+    pub subjects: HashMap<DeploySubject, SubjectAliveStatus>,
+}
+
+impl ConnAliveStatus {
+    pub fn new() -> ConnAliveStatus {
+        return ConnAliveStatus {
+            subjects: HashMap::new()
         };
     }
 }
