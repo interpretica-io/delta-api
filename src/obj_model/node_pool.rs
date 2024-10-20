@@ -273,6 +273,8 @@ impl NodePool {
         let mut commands = Vec::<String>::new();
         commands.push("/tmp/visao/bin/visao --server 'tcp://".to_owned() + &conn_params.0 + ":" + &conn_params.1 + "' < /dev/null > /dev/null 2> /dev/null &");
         commands.push("echo $! > /tmp/visao/pid".to_string());
+        commands.push("echo ".to_owned() + &conn_params.0 + " > /tmp/visao/bind_addr");
+        commands.push("echo ".to_owned() + &conn_params.1 + " > /tmp/visao/bind_port");
         commands.push("sleep 4".to_string());
         commands.push("kill -0 \"$(cat /tmp/visao/pid)\" && echo pid \"$(cat /tmp/visao/pid)\"".to_string());
 
