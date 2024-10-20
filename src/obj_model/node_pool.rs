@@ -253,6 +253,7 @@ impl NodePool {
             return RunResult::NodeNotConnected;
         }
 
+        let node = &self.nodes[&name];
         let inst = &self.instances[&name];
 
         let mut conn_status = inst.conn_status.clone();
@@ -260,10 +261,27 @@ impl NodePool {
 
         subject_st.running = false;
 
-        if self.execute(
+        /* Infer bind addr/bind port */
+
+        /* Kill existing instance, if exists */
+        let _exec_result = self.execute(
             &inst.ssh_session.as_ref().unwrap(),
-            "/bin/bash -c \"kill $(cat /tmp/visao/pid) ; ./build/fs/bin/visao --server tcp://127.0.0.1:5700 & > /dev/null 2> /dev/null ; echo $! > /tmp/visao/pid\"".to_string()
-            ) == "" {
+            "/bin/bash -c 'test -f /tmp/visao/pid && test $(cat /tmp/visao/pid) -gt 0 && kill $(cat /tmp/visao/pid)'".to_string());
+
+        /* Run new instance */
+        let conn_params = self.infer_conn_params(node);
+        let mut commands = Vec::<String>::new();
+        commands.push("/tmp/visao/bin/visao --server 'tcp://".to_owned() + &conn_params.0 + ":" + &conn_params.1 + "' < /dev/null > /dev/null 2> /dev/null &");
+        commands.push("echo $! > /tmp/visao/pid".to_string());
+        commands.push("sleep 4".to_string());
+        commands.push("kill -0 \"$(cat /tmp/visao/pid)\" && echo pid \"$(cat /tmp/visao/pid)\"".to_string());
+
+        let exec_result = self.execute_vec(
+            &inst.ssh_session.as_ref().unwrap(),
+            commands);
+
+        /* Check result */
+        if !exec_result.contains("pid") {
             conn_status.set_subject(subject, subject_st);
             self.set_state(name, conn_status);
             return RunResult::RunFailed;
@@ -279,7 +297,7 @@ impl NodePool {
         let file = match file {
             Ok(f) => f,
             Err(e) => {
-                eprintln!("Failed to open local file: {}", e);
+                error!("Failed to open local file: {}", e);
                 return false;
             }
         };
@@ -288,7 +306,7 @@ impl NodePool {
         let metadata = match metadata {
             Ok(m) => m,
             Err(e) => {
-                eprintln!("Failed to get file metadata: {}", e);
+                error!("Failed to get file metadata: {}", e);
                 return false;
             }
         };
@@ -340,9 +358,47 @@ impl NodePool {
         return s;
     }
 
+    fn execute_vec(&self, sess: &Session, commands: Vec<String>) -> String {
+        let mut channel = sess.channel_session().unwrap();
+        let mut exec_result : String = "".to_string();
+        channel.shell().unwrap();
+        for command in commands {
+            channel.write_all(command.as_bytes()).unwrap();
+            channel.write_all(b"\n").unwrap();
+        }
+        channel.send_eof().unwrap();
+        channel.read_to_string(&mut exec_result).unwrap();
+
+        return exec_result;
+    }
+
     fn set_state(&mut self, name: String, conn_status: ConnStatus)
     {
         let m = self.instances.get_mut(&name);
         m.unwrap().conn_status = conn_status.clone();
+    }
+
+    fn infer_conn_params(&self, node: &Node) -> (String, String) {
+        let mut bind_addr = self.get_node_param(node, NodeParameters::BindAddr);
+
+        if bind_addr.contains("'") || bind_addr.contains("\"") {
+            error!("Reset bind address due to bad symbols: {}", bind_addr);
+            bind_addr = "".to_string();
+        }
+
+        if bind_addr == "" {
+            bind_addr = "127.0.0.1".to_string();
+        }
+
+        let mut bind_port = self.get_node_param(node, NodeParameters::BindPort);
+        if !bind_port.parse::<u16>().is_ok() {
+            error!("Reset bind port due to bad symbols: {}", bind_port);
+            bind_port = "".to_string();
+        }
+        if bind_port == "" {
+            bind_port = "5700".to_string();
+        }
+        return (bind_addr, bind_port)
+
     }
 }
