@@ -214,7 +214,7 @@ impl NodePool {
 
         if self.execute(
             &inst.ssh_session.as_ref().unwrap(),
-            "tar xvf /tmp/visao-archive.tar.xz -C /tmp/visao".to_string(),
+            "tar xvf /tmp/visao-archive.tar.xz -C /tmp/visao > /dev/null 2> /dev/null && echo ok".to_string(),
         ) == ""
         {
             conn_status.set_subject(subject, subject_st);
@@ -284,7 +284,17 @@ impl NodePool {
             }
         };
 
-        let remote_file = sess.scp_send(Path::new(&remote_path), 0o644, 10, None);
+        let metadata = file.metadata();
+        let metadata = match metadata {
+            Ok(m) => m,
+            Err(e) => {
+                eprintln!("Failed to get file metadata: {}", e);
+                return false;
+            }
+        };
+        let file_size = metadata.len();
+
+        let remote_file = sess.scp_send(Path::new(&remote_path), 0o644, file_size, None);
 
         match remote_file {
             Ok(ref _n) => {}

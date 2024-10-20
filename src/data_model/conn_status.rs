@@ -70,7 +70,11 @@ impl ConnStatus {
     }
 
     pub fn set_subject(&mut self, subject: DeploySubject, status: SubjectStatus) {
-        let m = self.subjects.get_mut(&subject);
-        *m.unwrap() = status;
+        if self.subjects.contains_key(&subject) {
+            let m = self.subjects.get_mut(&subject);
+            *m.unwrap() = status;
+        } else {
+            self.subjects.insert(subject, status);
+        }
     }
 }
