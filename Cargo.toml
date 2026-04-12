@@ -12,4 +12,4 @@ ssh2 = { version = "0.9.4", optional = true }
 
 [features]
 object_model = [ "log", "ssh2" ]
-
+asp_client = [ "log" ]

@@ -4,7 +4,7 @@
  * Copyright 2024 Maxim Menshikov
  *
  * Permission is hereby granted, free of charge, to any person obtaining
- * a copy of this software and associated documentation files (the “Software”),
+ * a copy of this software and associated documentation files (the "Software"),
  * to deal in the Software without restriction, including without limitation
  * the rights to use, copy, modify, merge, publish, distribute, sublicense,
  * and/or sell copies of the Software, and to permit persons to whom the
@@ -13,7 +13,7 @@
  * The above copyright notice and this permission notice shall be included
  * in all copies or substantial portions of the Software.
  *
- * THE SOFTWARE IS PROVIDED “AS IS”, WITHOUT WARRANTY OF ANY KIND, EXPRESS
+ * THE SOFTWARE IS PROVIDED "AS IS", WITHOUT WARRANTY OF ANY KIND, EXPRESS
  * OR IMPLIED, INCLUDING BUT NOT LIMITED TO THE WARRANTIES OF MERCHANTABILITY,
  * FITNESS FOR A PARTICULAR PURPOSE AND NONINFRINGEMENT. IN NO EVENT SHALL THE
  * AUTHORS OR COPYRIGHT HOLDERS BE LIABLE FOR ANY CLAIM, DAMAGES OR OTHER
@@ -22,6 +22,21 @@
  * DEALINGS IN THE SOFTWARE.
  */
 
-pub mod asp_model;
-pub mod data_model;
-pub mod obj_model;
+use serde::{Deserialize, Serialize};
+use super::enums::ReportSeverity;
+
+/// A single defect report from analysis
+#[derive(Serialize, Deserialize, PartialEq, Clone, Debug, Default)]
+pub struct Report {
+    /// Source file path
+    pub file: Option<String>,
+    /// Rule / check identifier
+    pub rule_id: Option<String>,
+    /// Human-readable explanation
+    pub explanation: Option<String>,
+    /// Content of the line at the defect location
+    pub line_content: Option<String>,
+    pub line: u32,
+    pub column: u32,
+    pub severity: ReportSeverity,
+}
