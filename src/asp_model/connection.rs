@@ -22,19 +22,23 @@
  * DEALINGS IN THE SOFTWARE.
  */
 
-use std::io::{BufRead, BufReader, Write};
-use std::net::TcpStream;
-use std::sync::atomic::{AtomicU32, Ordering};
-use std::thread;
-use std::time::Duration;
+//! Safe Rust wrapper around the **libasp** C connection API.
+//!
+//! All protocol details (JSON-RPC serialisation, NNG/TCP transport, response
+//! parsing) are handled by libasp itself.  This module is responsible only for
+//! converting between idiomatic Rust types and the C structs/linked-lists
+//! expected by libasp, and for enforcing memory-safety invariants.
+
+use std::ffi::{CStr, CString};
+use std::os::raw::{c_char, c_void};
 
 use log::{debug, error};
-use serde_json::{json, Value};
 
 use super::address::Address;
 use super::analysis::{Analysis, AnalysisOutline, AnalysisState};
 use super::enums::{
-    AnalysisPhase, IdentificationStatus, Language, ReportSeverity, ResourceType, SymbolOrigin,
+    AnalysisJobKind, AnalysisPhase, Compiler, Cpu, IdentificationStatus, Language, Os,
+    ReportSeverity, ResourceType, SymbolOrigin,
 };
 use super::env::Environment;
 use super::file::File;
@@ -44,186 +48,783 @@ use super::result::AnalysisResult;
 use super::status::{AspError, AspResult};
 use super::symbol::{Symbol, SymbolCall, SymbolLocation};
 use super::workspace::{Workspace, WorkspaceOutline};
+use super::sys;
 
-// ---------------------------------------------------------------------------
-// Global request-ID counter (JSON-RPC 2.0 "id" field)
-// ---------------------------------------------------------------------------
+// ─────────────────────────────────────────────────────────────────────────────
+// C-string helpers
+// ─────────────────────────────────────────────────────────────────────────────
 
-static REQUEST_ID: AtomicU32 = AtomicU32::new(1);
-
-// ---------------------------------------------------------------------------
-// Connection struct
-// ---------------------------------------------------------------------------
-
-/// TCP connection to an ASP (Analysis Server Protocol) server.
-///
-/// The wire format is newline-delimited JSON-RPC 2.0: each message is a
-/// single JSON object followed by `\n`.
-pub struct Connection {
-    /// Write half — used exclusively for sending requests.
-    stream: TcpStream,
-    /// Buffered read half — a clone of `stream` wrapped in a `BufReader`.
-    reader: BufReader<TcpStream>,
-    /// Stored send-timeout value (milliseconds).
-    send_timeout_ms: Option<u64>,
-    /// Stored receive-timeout value (milliseconds).
-    recv_timeout_ms: Option<u64>,
+/// Copy a C string pointer into a Rust `String` without freeing the pointer.
+/// Returns `None` if `ptr` is null or the bytes are not valid UTF-8.
+unsafe fn cstr_to_string(ptr: *const c_char) -> Option<String> {
+    if ptr.is_null() {
+        return None;
+    }
+    Some(CStr::from_ptr(ptr).to_string_lossy().into_owned())
 }
 
-// ---------------------------------------------------------------------------
+/// Copy a C string pointer into a Rust `String`, then free the pointer with
+/// the C `free()` function.  Use this for getters whose documentation says
+/// "must be freed with free()" (e.g. `asp_analysis_state_get_progress_entity`,
+/// `asp_report_get_line_content`, `asp_address2str`).
+unsafe fn cstr_to_string_free(ptr: *mut c_char) -> Option<String> {
+    if ptr.is_null() {
+        return None;
+    }
+    let s = CStr::from_ptr(ptr).to_string_lossy().into_owned();
+    c_free(ptr as *mut c_void);
+    Some(s)
+}
+
+/// Thin wrapper around the libc `free()` symbol so we avoid adding a `libc`
+/// dependency just for this one call.
+unsafe fn c_free(ptr: *mut c_void) {
+    extern "C" {
+        fn free(p: *mut c_void);
+    }
+    if !ptr.is_null() {
+        free(ptr);
+    }
+}
+
+// ─────────────────────────────────────────────────────────────────────────────
+// asp_status → AspError
+// ─────────────────────────────────────────────────────────────────────────────
+
+/// Convert a non-zero `asp_status` return value into an [`AspError`].
+fn asp_error(rc: sys::asp_status) -> AspError {
+    match rc {
+        -1 => AspError::FdFailure,
+        -2 => AspError::ConnectionFailed,
+        -3 => AspError::NoMemory,
+        -4 => AspError::Io("transport error".into()),
+        -5 => AspError::MalformedResult,
+        -6 => AspError::Fail,
+        -7 => AspError::InvalidArgument,
+        -8 => AspError::NoEntry,
+        -9 => AspError::TimedOut,
+        _  => AspError::Fail,
+    }
+}
+
+// ─────────────────────────────────────────────────────────────────────────────
+// Rust → C enum mappings
+// ─────────────────────────────────────────────────────────────────────────────
+//
+// The C enums start at 0 = Unspecified / Unknown and match the order of our
+// Rust enums, so we use explicit match arms to be safe against future
+// reorderings.
+
+fn to_c_language(l: &Language) -> u32 {
+    match l {
+        Language::Unspecified => 0,
+        Language::C           => 1,
+        Language::Cpp         => 2,
+        Language::Ruc         => 3,
+    }
+}
+
+fn to_c_compiler(c: &Compiler) -> u32 {
+    match c {
+        Compiler::Unspecified => 0,
+        Compiler::Gcc         => 1,
+        Compiler::Clang       => 2,
+        Compiler::Ruc         => 3,
+        Compiler::MingwGcc    => 4,
+        Compiler::MingwClang  => 5,
+        Compiler::Msvc        => 6,
+        Compiler::ClangCl     => 7,
+    }
+}
+
+fn to_c_cpu(c: &Cpu) -> u32 {
+    match c {
+        Cpu::Unspecified => 0,
+        Cpu::X86         => 1,
+        Cpu::X8664       => 2,
+        Cpu::ArmLe       => 3,
+        Cpu::ArmBe       => 4,
+        Cpu::Arm64Le     => 5,
+        Cpu::Arm64Be     => 6,
+        Cpu::Mips32Le    => 7,
+        Cpu::Mips32Be    => 8,
+        Cpu::Mips64Le    => 9,
+        Cpu::Mips64Be    => 10,
+        Cpu::RucVm       => 11,
+    }
+}
+
+fn to_c_os(o: &Os) -> u32 {
+    match o {
+        Os::Unspecified => 0,
+        Os::Linux       => 1,
+        Os::Windows     => 2,
+        Os::Macos       => 3,
+        Os::Baremetal   => 4,
+        Os::RucVm       => 5,
+    }
+}
+
+fn to_c_job_kind(k: &AnalysisJobKind) -> u32 {
+    match k {
+        AnalysisJobKind::Unknown        => 0,
+        AnalysisJobKind::Defects        => 1,
+        AnalysisJobKind::Identification => 2,
+        AnalysisJobKind::Dependency     => 3,
+    }
+}
+
+// ─────────────────────────────────────────────────────────────────────────────
+// C → Rust enum mappings
+// ─────────────────────────────────────────────────────────────────────────────
+
+fn from_c_phase(v: u32) -> AnalysisPhase {
+    AnalysisPhase::try_from(v).unwrap_or_default()
+}
+
+fn from_c_severity(v: u32) -> ReportSeverity {
+    match v {
+        1 => ReportSeverity::Paranoid,
+        2 => ReportSeverity::Low,
+        3 => ReportSeverity::Medium,
+        4 => ReportSeverity::High,
+        5 => ReportSeverity::Critical,
+        _ => ReportSeverity::Unknown,
+    }
+}
+
+fn from_c_language(v: u32) -> Language {
+    match v {
+        1 => Language::C,
+        2 => Language::Cpp,
+        3 => Language::Ruc,
+        _ => Language::Unspecified,
+    }
+}
+
+fn from_c_symbol_origin(v: u32) -> SymbolOrigin {
+    match v {
+        1 => SymbolOrigin::FromSource,
+        2 => SymbolOrigin::External,
+        3 => SymbolOrigin::StandardLibrary,
+        4 => SymbolOrigin::Internal,
+        _ => SymbolOrigin::Unknown,
+    }
+}
+
+// ─────────────────────────────────────────────────────────────────────────────
+// Rust → C object builders
+// ─────────────────────────────────────────────────────────────────────────────
+
+/// Build a `*mut asp_address` for a local-file path.
+unsafe fn build_c_address_local(path: &str) -> AspResult<*mut sys::asp_address> {
+    let c_path = CString::new(path).map_err(|_| AspError::InvalidArgument)?;
+    let addr = sys::asp_address_local_file(c_path.as_ptr());
+    if addr.is_null() {
+        Err(AspError::NoMemory)
+    } else {
+        Ok(addr)
+    }
+}
+
+/// Build a `*mut asp_address` for an IP endpoint.
+unsafe fn build_c_address_ip(host: &str, port: u16) -> AspResult<*mut sys::asp_address> {
+    let c_host = CString::new(host).map_err(|_| AspError::InvalidArgument)?;
+    let addr = sys::asp_address_ip(c_host.as_ptr(), port);
+    if addr.is_null() {
+        Err(AspError::NoMemory)
+    } else {
+        Ok(addr)
+    }
+}
+
+/// Build a `*mut asp_address` for an NNG URL.
+unsafe fn build_c_address_nng(url: &str) -> AspResult<*mut sys::asp_address> {
+    let c_url = CString::new(url).map_err(|_| AspError::InvalidArgument)?;
+    let addr = sys::asp_address_nng(c_url.as_ptr());
+    if addr.is_null() {
+        Err(AspError::NoMemory)
+    } else {
+        Ok(addr)
+    }
+}
+
+/// Build a `*mut asp_address` from our Rust [`Address`].
+unsafe fn build_c_address(addr: &Address) -> AspResult<*mut sys::asp_address> {
+    match &addr.urn {
+        None => Err(AspError::InvalidArgument),
+        Some(urn) => {
+            use super::address::AddressType;
+            match addr.addr_type {
+                AddressType::Inet | AddressType::Inet6 => {
+                    build_c_address_ip(urn, addr.port.unwrap_or(0))
+                }
+                AddressType::Nng => build_c_address_nng(urn),
+                _ => build_c_address_local(urn),
+            }
+        }
+    }
+}
+
+/// Build a `*mut asp_env` from our Rust [`Environment`].
+/// Ownership of the returned pointer belongs to the caller.
+unsafe fn build_c_env(env: &Environment) -> AspResult<*mut sys::asp_env> {
+    let c_env = sys::asp_env_create();
+    if c_env.is_null() {
+        return Err(AspError::NoMemory);
+    }
+
+    if let Some(lang) = &env.language {
+        sys::asp_env_set_language(c_env, to_c_language(lang));
+    }
+    if let Some(compiler) = &env.compiler {
+        sys::asp_env_set_compiler(c_env, to_c_compiler(compiler));
+    }
+    if let Some(cpu) = &env.cpu {
+        sys::asp_env_set_cpu(c_env, to_c_cpu(cpu));
+    }
+    if let Some(os) = &env.runtime_os {
+        sys::asp_env_set_runtime_os(c_env, to_c_os(os));
+    }
+    if let Some(wk) = &env.windows_kit {
+        let c = CString::new(wk.as_str()).map_err(|_| AspError::InvalidArgument)?;
+        sys::asp_env_set_windows_kit(c_env, c.as_ptr());
+    }
+    if let Some(vct) = &env.vctools {
+        let c = CString::new(vct.as_str()).map_err(|_| AspError::InvalidArgument)?;
+        sys::asp_env_set_vctools(c_env, c.as_ptr());
+    }
+    if let Some(loc) = &env.locale {
+        let c = CString::new(loc.as_str()).map_err(|_| AspError::InvalidArgument)?;
+        sys::asp_env_set_locale(c_env, c.as_ptr());
+    }
+    if env.override_higher_level {
+        sys::asp_env_set_override_higher_level(c_env, true);
+    }
+    for inc in &env.include_dirs {
+        let c_addr = build_c_address(&inc.address)?;
+        // env takes ownership of the address (own_address = true)
+        sys::asp_env_add_include_directory(c_env, c_addr, true);
+    }
+
+    Ok(c_env)
+}
+
+/// Build a `*mut asp_file` from our Rust [`File`].
+/// Ownership of the returned pointer belongs to the caller.
+unsafe fn build_c_file(file: &File) -> AspResult<*mut sys::asp_file> {
+    let c_addr = build_c_address(&file.address)?;
+    // file takes ownership of the address
+    let c_file = sys::asp_file_create(c_addr, true);
+    if c_file.is_null() {
+        sys::asp_address_free(c_addr);
+        return Err(AspError::NoMemory);
+    }
+    if let Some(env) = &file.env {
+        let c_env = build_c_env(env)?;
+        // file takes ownership of the env
+        sys::asp_file_attach_env(c_file, c_env, true);
+    }
+    Ok(c_file)
+}
+
+/// Build a full `*mut asp_workspace` from our Rust [`Workspace`].
+/// Ownership of the returned pointer belongs to the caller.
+unsafe fn build_c_workspace(ws: &Workspace) -> AspResult<*mut sys::asp_workspace> {
+    let c_ws = sys::asp_workspace_create();
+    if c_ws.is_null() {
+        return Err(AspError::NoMemory);
+    }
+    if let Some(name) = &ws.name {
+        let c_name = CString::new(name.as_str()).map_err(|_| AspError::InvalidArgument)?;
+        sys::asp_workspace_set_name(c_ws, c_name.as_ptr());
+    }
+    if ws.id != Workspace::ID_UNKNOWN {
+        sys::asp_workspace_set_id(c_ws, ws.id);
+    }
+    if let Some(env) = &ws.env {
+        let c_env = build_c_env(env)?;
+        // workspace takes ownership
+        sys::asp_workspace_attach_env(c_ws, c_env, true);
+    }
+    for file in &ws.files {
+        let c_file = build_c_file(file)?;
+        // workspace takes ownership
+        sys::asp_workspace_add_file(c_ws, c_file, true);
+    }
+    Ok(c_ws)
+}
+
+/// Build a minimal `*mut asp_workspace` that only carries an ID.
+/// Use this as a handle when calling connection functions that need the
+/// workspace only to identify it on the server.
+unsafe fn build_c_workspace_id(id: u32) -> AspResult<*mut sys::asp_workspace> {
+    let c_ws = sys::asp_workspace_create();
+    if c_ws.is_null() {
+        return Err(AspError::NoMemory);
+    }
+    sys::asp_workspace_set_id(c_ws, id);
+    Ok(c_ws)
+}
+
+/// Build a full `*mut asp_analysis` from our Rust [`Analysis`].
+unsafe fn build_c_analysis(an: &Analysis) -> AspResult<*mut sys::asp_analysis> {
+    let c_an = sys::asp_analysis_create();
+    if c_an.is_null() {
+        return Err(AspError::NoMemory);
+    }
+    if an.id != Analysis::ID_UNKNOWN {
+        sys::asp_analysis_set_id(c_an, an.id);
+    }
+    for job in &an.jobs {
+        let c_job = sys::asp_analysis_job_create();
+        if c_job.is_null() {
+            sys::asp_analysis_free(c_an);
+            return Err(AspError::NoMemory);
+        }
+        sys::asp_analysis_job_set_kind(c_job, to_c_job_kind(&job.kind));
+        // analysis takes ownership of the job
+        sys::asp_analysis_add_job(c_an, c_job, true);
+    }
+    Ok(c_an)
+}
+
+/// Build a minimal `*mut asp_analysis` carrying only an ID.
+unsafe fn build_c_analysis_id(id: u32) -> AspResult<*mut sys::asp_analysis> {
+    let c_an = sys::asp_analysis_create();
+    if c_an.is_null() {
+        return Err(AspError::NoMemory);
+    }
+    sys::asp_analysis_set_id(c_an, id);
+    Ok(c_an)
+}
+
+// ─────────────────────────────────────────────────────────────────────────────
+// C → Rust linked-list walkers
+// ─────────────────────────────────────────────────────────────────────────────
+
+/// Convert a `*mut asp_symbol` linked list (owned by a result or location
+/// struct) into a `Vec<Symbol>`.  The caller must NOT free the individual
+/// nodes — they are owned by the parent C struct.
+unsafe fn walk_symbols(head: *mut sys::asp_symbol) -> Vec<Symbol> {
+    let mut out = Vec::new();
+    let mut ptr = head;
+    while !ptr.is_null() {
+        out.push(Symbol {
+            name:          cstr_to_string(sys::asp_symbol_get_name(ptr)),
+            namespace:     cstr_to_string(sys::asp_symbol_get_namespace(ptr)),
+            resource_type: ResourceType(sys::asp_symbol_get_resource_type(ptr)),
+            origin:        from_c_symbol_origin(sys::asp_symbol_get_origin(ptr)),
+        });
+        ptr = sys::asp_symbol_next(ptr);
+    }
+    out
+}
+
+/// Convert a `*mut asp_file` linked list into a `Vec<File>`.
+unsafe fn walk_files(head: *mut sys::asp_file) -> Vec<File> {
+    let mut out = Vec::new();
+    let mut ptr = head;
+    while !ptr.is_null() {
+        let addr_ptr = sys::asp_file_get_address(ptr);
+        // asp_address has a public `address` field (char*) we can read directly
+        // after bindgen exposes the struct layout.
+        let path = if addr_ptr.is_null() {
+            String::new()
+        } else {
+            // asp_address2str returns a newly allocated string → free it.
+            let raw = sys::asp_address2str(addr_ptr);
+            cstr_to_string_free(raw).unwrap_or_default()
+        };
+        out.push(File {
+            address: Address::local_file(path),
+            env: None,
+        });
+        ptr = sys::asp_file_next(ptr);
+    }
+    out
+}
+
+/// Convert a `*mut asp_symbol_location` linked list.
+unsafe fn walk_symbol_locations(head: *mut sys::asp_symbol_location) -> Vec<SymbolLocation> {
+    let mut out = Vec::new();
+    let mut ptr = head;
+    while !ptr.is_null() {
+        out.push(SymbolLocation {
+            name:    cstr_to_string(sys::asp_symbol_location_get_name(ptr)),
+            files:   walk_files(sys::asp_symbol_location_get_file(ptr)),
+            symbols: walk_symbols(sys::asp_symbol_location_get_symbol(ptr)),
+        });
+        ptr = sys::asp_symbol_location_next(ptr);
+    }
+    out
+}
+
+/// Convert a `*mut asp_symbol_call` linked list.
+unsafe fn walk_symbol_calls(head: *mut sys::asp_symbol_call) -> Vec<SymbolCall> {
+    let mut out = Vec::new();
+    let mut ptr = head;
+    while !ptr.is_null() {
+        out.push(SymbolCall {
+            callers: walk_symbols(sys::asp_symbol_call_get_caller(ptr)),
+            callees: walk_symbols(sys::asp_symbol_call_get_callee(ptr)),
+        });
+        ptr = sys::asp_symbol_call_next(ptr);
+    }
+    out
+}
+
+/// Convert a `*mut asp_identification_report` linked list.
+unsafe fn walk_ident_reports(
+    head: *mut sys::asp_identification_report,
+) -> Vec<IdentificationReport> {
+    let mut out = Vec::new();
+    let mut ptr = head;
+    while !ptr.is_null() {
+        out.push(IdentificationReport {
+            language: from_c_language(sys::asp_identification_report_get_language(ptr)),
+            status:   IdentificationStatus(
+                sys::asp_identification_report_get_status(ptr),
+            ),
+        });
+        ptr = sys::asp_identification_report_next(ptr);
+    }
+    out
+}
+
+/// Convert a `*mut asp_identification_file` linked list.
+unsafe fn walk_ident_files(head: *mut sys::asp_identification_file) -> Vec<IdentificationFile> {
+    let mut out = Vec::new();
+    let mut ptr = head;
+    while !ptr.is_null() {
+        let c_file = sys::asp_identification_file_get_file(ptr);
+        let file = if c_file.is_null() {
+            None
+        } else {
+            let addr_ptr = sys::asp_file_get_address(c_file);
+            let path = if addr_ptr.is_null() {
+                String::new()
+            } else {
+                let raw = sys::asp_address2str(addr_ptr);
+                cstr_to_string_free(raw).unwrap_or_default()
+            };
+            Some(File {
+                address: Address::local_file(path),
+                env: None,
+            })
+        };
+        let reports = walk_ident_reports(sys::asp_identification_file_get_report(ptr));
+        out.push(IdentificationFile { file, reports });
+        ptr = sys::asp_identification_file_next(ptr);
+    }
+    out
+}
+
+/// Convert a `*mut asp_report` linked list into `Vec<Report>`.
+unsafe fn walk_reports(head: *mut sys::asp_report) -> Vec<Report> {
+    let mut out = Vec::new();
+    let mut ptr = head;
+    while !ptr.is_null() {
+        // line_content is documented as "must be freed with free()"
+        let line_content_raw = sys::asp_report_get_line_content(ptr);
+        let line_content = cstr_to_string_free(line_content_raw);
+
+        out.push(Report {
+            file:         cstr_to_string(sys::asp_report_get_file(ptr) as *const c_char),
+            rule_id:      cstr_to_string(sys::asp_report_get_rule_id(ptr) as *const c_char),
+            explanation:  cstr_to_string(sys::asp_report_get_explanation(ptr) as *const c_char),
+            line_content,
+            line:         sys::asp_report_get_line(ptr),
+            column:       sys::asp_report_get_column(ptr),
+            severity:     from_c_severity(sys::asp_report_get_severity(ptr)),
+        });
+        ptr = sys::asp_report_next(ptr);
+    }
+    out
+}
+
+// Symbol-location kind constants (match asp_analysis_result.h)
+const SYM_LOC_PER_FILE:       u32 = 0; // ASP_SYMBOL_LOCATION_KIND_PER_FILE
+const SYM_LOC_CONNECTED_AREAS: u32 = 1; // ASP_SYMBOL_LOCATION_KIND_CONNECTED_AREAS
+
+// ─────────────────────────────────────────────────────────────────────────────
+// Connection struct
+// ─────────────────────────────────────────────────────────────────────────────
+
+/// A connection to an ASP (Analysis Server Protocol) server.
+///
+/// Wraps the opaque `asp_connection*` C handle.  All network I/O, protocol
+/// framing and JSON serialisation is performed by **libasp** itself — this
+/// struct only converts between Rust and C types.
+pub struct Connection {
+    conn: *mut sys::asp_connection,
+}
+
+// SAFETY: asp_connection is not aliased from another thread while this struct
+// is alive; we never hand out references to the raw pointer.
+unsafe impl Send for Connection {}
+
+impl Drop for Connection {
+    fn drop(&mut self) {
+        unsafe {
+            sys::asp_connection_close(self.conn);
+            sys::asp_connection_free(self.conn);
+            sys::asp_deinitialize();
+        }
+    }
+}
+
+// ─────────────────────────────────────────────────────────────────────────────
 // Public API
-// ---------------------------------------------------------------------------
+// ─────────────────────────────────────────────────────────────────────────────
 
 impl Connection {
-    // ── Lifecycle ──────────────────────────────────────────────────────────
+    // ── Lifecycle ─────────────────────────────────────────────────────────
 
-    /// Open a TCP connection to an ASP server.
+    /// Connect to an ASP server over TCP.
     pub fn connect(host: &str, port: u16) -> AspResult<Self> {
-        let addr = format!("{}:{}", host, port);
-        debug!("ASP connecting to {}", addr);
-        let stream = TcpStream::connect(&addr).map_err(|_| AspError::ConnectionFailed)?;
-        let reader_stream = stream.try_clone().map_err(AspError::from)?;
-        let reader = BufReader::new(reader_stream);
-        Ok(Connection {
-            stream,
-            reader,
-            send_timeout_ms: None,
-            recv_timeout_ms: None,
-        })
+        debug!("ASP connecting (TCP) to {}:{}", host, port);
+        unsafe {
+            let rc = sys::asp_initialize();
+            if rc != 0 {
+                return Err(asp_error(rc));
+            }
+
+            let conn = sys::asp_connection_create();
+            if conn.is_null() {
+                sys::asp_deinitialize();
+                return Err(AspError::NoMemory);
+            }
+
+            let addr = build_c_address_ip(host, port)?;
+            // connection takes ownership of address (own_address = true)
+            let rc = sys::asp_connection_connect(conn, addr, true);
+            if rc != 0 {
+                error!("asp_connection_connect failed: {}", rc);
+                sys::asp_connection_free(conn);
+                sys::asp_deinitialize();
+                return Err(asp_error(rc));
+            }
+
+            debug!("ASP connected to {}:{}", host, port);
+            Ok(Connection { conn })
+        }
     }
 
-    // ── Timeout configuration ──────────────────────────────────────────────
+    /// Connect to an ASP server via an NNG URL (e.g. `"tcp://127.0.0.1:5700"`).
+    pub fn connect_nng(url: &str) -> AspResult<Self> {
+        debug!("ASP connecting (NNG) to {}", url);
+        unsafe {
+            let rc = sys::asp_initialize();
+            if rc != 0 {
+                return Err(asp_error(rc));
+            }
 
-    /// Set the receive (read) timeout in milliseconds.
-    pub fn set_recv_timeout(&mut self, ms: u64) {
-        self.recv_timeout_ms = Some(ms);
-        let timeout = Some(Duration::from_millis(ms));
-        let _ = self.stream.set_read_timeout(timeout);
-        // Also apply to the reader's inner clone so `read_line` honours it.
-        let _ = self.reader.get_mut().set_read_timeout(timeout);
+            let conn = sys::asp_connection_create();
+            if conn.is_null() {
+                sys::asp_deinitialize();
+                return Err(AspError::NoMemory);
+            }
+
+            let addr = build_c_address_nng(url)?;
+            let rc = sys::asp_connection_connect(conn, addr, true);
+            if rc != 0 {
+                error!("asp_connection_connect (NNG) failed: {}", rc);
+                sys::asp_connection_free(conn);
+                sys::asp_deinitialize();
+                return Err(asp_error(rc));
+            }
+
+            debug!("ASP connected (NNG) to {}", url);
+            Ok(Connection { conn })
+        }
     }
 
-    /// Set the send (write) timeout in milliseconds.
-    pub fn set_send_timeout(&mut self, ms: u64) {
-        self.send_timeout_ms = Some(ms);
-        let _ = self.stream.set_write_timeout(Some(Duration::from_millis(ms)));
+    // ── Timeouts ──────────────────────────────────────────────────────────
+
+    /// Set the receive timeout in milliseconds.
+    pub fn set_recv_timeout(&mut self, ms: i32) {
+        unsafe {
+            sys::asp_connection_set_recv_timeout(self.conn, ms);
+        }
     }
 
-    // ── Workspace operations ───────────────────────────────────────────────
+    /// Set the send timeout in milliseconds.
+    pub fn set_send_timeout(&mut self, ms: i32) {
+        unsafe {
+            sys::asp_connection_set_send_timeout(self.conn, ms);
+        }
+    }
 
-    /// Create a new workspace on the server and populate `workspace.id`.
+    // ── Workspace operations ──────────────────────────────────────────────
+
+    /// Create a new workspace on the server.
+    ///
+    /// On success `workspace.id` is updated with the server-assigned ID.
     pub fn add_workspace(&mut self, workspace: &mut Workspace) -> AspResult<()> {
-        let mut params = json!({});
-        if let Some(name) = &workspace.name {
-            params["name"] = json!(name);
+        unsafe {
+            let c_ws = build_c_workspace(workspace)?;
+            let rc = sys::asp_connection_add_workspace(self.conn, c_ws);
+            if rc == 0 {
+                workspace.id = sys::asp_workspace_get_id(c_ws);
+                debug!("workspace created, id={}", workspace.id);
+            }
+            sys::asp_workspace_free(c_ws);
+            if rc != 0 {
+                return Err(asp_error(rc));
+            }
+            Ok(())
         }
-        if let Some(env) = &workspace.env {
-            params["environment"] = env_to_json(env);
-        }
-        if !workspace.files.is_empty() {
-            params["file"] = files_to_json(&workspace.files);
-        }
-        let result = self.send_request("workspace_create", params)?;
-        workspace.id = result["workspace_id"]
-            .as_u64()
-            .ok_or(AspError::MalformedResult)? as u32;
-        debug!("workspace created, id={}", workspace.id);
-        Ok(())
     }
 
     /// Destroy a workspace on the server.
     pub fn destroy_workspace(&mut self, workspace: &Workspace) -> AspResult<()> {
-        let params = json!({ "workspace_id": workspace.id });
-        self.send_request("workspace_destroy", params)?;
-        debug!("workspace {} destroyed", workspace.id);
-        Ok(())
-    }
-
-    /// Retrieve a list of all workspaces known to the server.
-    pub fn get_workspaces(&mut self) -> AspResult<Vec<WorkspaceOutline>> {
-        let result = self.send_request("workspace_list", json!({}))?;
-        let mut list = Vec::new();
-        if let Some(arr) = result["workspace"].as_array() {
-            for v in arr {
-                list.push(WorkspaceOutline {
-                    id: v["id"].as_u64().unwrap_or(0) as u32,
-                    name: v["name"].as_str().map(|s| s.to_string()),
-                });
+        unsafe {
+            let c_ws = build_c_workspace_id(workspace.id)?;
+            let rc = sys::asp_connection_destroy_workspace(self.conn, c_ws);
+            sys::asp_workspace_free(c_ws);
+            if rc != 0 {
+                return Err(asp_error(rc));
             }
+            debug!("workspace {} destroyed", workspace.id);
+            Ok(())
         }
-        Ok(list)
     }
 
-    /// Add a single file to an existing workspace.
-    pub fn add_workspace_file(&mut self, workspace: &Workspace, file: &File) -> AspResult<()> {
-        let params = json!({
-            "workspace_id": workspace.id,
-            "file": [file_to_json(file)],
-        });
-        self.send_request("workspace_file_add", params)?;
-        Ok(())
+    /// Return a list of all workspaces currently known to the server.
+    pub fn get_workspaces(&mut self) -> AspResult<Vec<WorkspaceOutline>> {
+        unsafe {
+            let mut head: *mut sys::asp_workspace_outline = std::ptr::null_mut();
+            let rc = sys::asp_connection_get_workspaces(self.conn, &mut head);
+            if rc != 0 {
+                return Err(asp_error(rc));
+            }
+
+            let mut out = Vec::new();
+            let mut ptr = head;
+            while !ptr.is_null() {
+                let id = sys::asp_workspace_outline_get_id(ptr);
+                // asp_workspace_outline has a public `name` field; read it
+                // directly since the C API has no dedicated getter.
+                let name = cstr_to_string((*ptr).name as *const c_char);
+                out.push(WorkspaceOutline { id, name });
+                ptr = sys::asp_workspace_outline_next(ptr);
+            }
+
+            // Free the outline list (each node is freed by the recursive free)
+            let mut ptr = head;
+            while !ptr.is_null() {
+                let next = sys::asp_workspace_outline_next(ptr);
+                sys::asp_workspace_outline_free(ptr);
+                ptr = next;
+            }
+
+            Ok(out)
+        }
     }
 
-    /// Remove a single file from an existing workspace.
-    pub fn remove_workspace_file(&mut self, workspace: &Workspace, file: &File) -> AspResult<()> {
-        let params = json!({
-            "workspace_id": workspace.id,
-            "file": [file_to_json(file)],
-        });
-        self.send_request("workspace_file_remove", params)?;
-        Ok(())
+    /// Register an additional source file inside an existing workspace.
+    pub fn add_workspace_file(
+        &mut self,
+        workspace: &Workspace,
+        file: &File,
+    ) -> AspResult<()> {
+        unsafe {
+            let c_ws   = build_c_workspace_id(workspace.id)?;
+            let c_file = build_c_file(file)?;
+            let rc = sys::asp_connection_add_workspace_file(self.conn, c_ws, c_file);
+            sys::asp_file_free(c_file);
+            sys::asp_workspace_free(c_ws);
+            if rc != 0 {
+                return Err(asp_error(rc));
+            }
+            Ok(())
+        }
     }
 
-    // ── Analysis operations ────────────────────────────────────────────────
+    /// Remove a source file from an existing workspace.
+    pub fn remove_workspace_file(
+        &mut self,
+        workspace: &Workspace,
+        file: &File,
+    ) -> AspResult<()> {
+        unsafe {
+            let c_ws   = build_c_workspace_id(workspace.id)?;
+            let c_file = build_c_file(file)?;
+            let rc = sys::asp_connection_remove_workspace_file(self.conn, c_ws, c_file);
+            sys::asp_file_free(c_file);
+            sys::asp_workspace_free(c_ws);
+            if rc != 0 {
+                return Err(asp_error(rc));
+            }
+            Ok(())
+        }
+    }
 
-    /// Start an analysis and populate `analysis.id` with the server-assigned ID.
+    // ── Analysis operations ───────────────────────────────────────────────
+
+    /// Start an analysis on the given workspace.
+    ///
+    /// On success `analysis.id` is updated with the server-assigned ID.
     pub fn start_analysis(
         &mut self,
         workspace: &Workspace,
         analysis: &mut Analysis,
     ) -> AspResult<()> {
-        let jobs: Vec<Value> = analysis
-            .jobs
-            .iter()
-            .map(|j| json!({ "kind": serde_json::to_value(&j.kind).unwrap_or(Value::Null) }))
-            .collect();
-
-        let params = json!({
-            "workspace_id": workspace.id,
-            "analysis_id":  analysis.id,
-            "job":          jobs,
-        });
-        let result = self.send_request("analysis_start", params)?;
-        analysis.id = result["analysis_id"]
-            .as_u64()
-            .ok_or(AspError::MalformedResult)? as u32;
-        debug!("analysis started, id={}", analysis.id);
-        Ok(())
+        unsafe {
+            let c_ws = build_c_workspace_id(workspace.id)?;
+            let c_an = build_c_analysis(analysis)?;
+            let rc = sys::asp_connection_start_analysis(self.conn, c_ws, c_an);
+            if rc == 0 {
+                analysis.id = sys::asp_analysis_get_id(c_an);
+                debug!("analysis started, id={}", analysis.id);
+            }
+            sys::asp_analysis_free(c_an);
+            sys::asp_workspace_free(c_ws);
+            if rc != 0 {
+                return Err(asp_error(rc));
+            }
+            Ok(())
+        }
     }
 
     /// Request that the server stop a running analysis.
-    pub fn stop_analysis(&mut self, workspace: &Workspace, analysis: &Analysis) -> AspResult<()> {
-        let params = json!({
-            "workspace_id": workspace.id,
-            "analysis_id":  analysis.id,
-        });
-        self.send_request("analysis_stop", params)?;
-        Ok(())
+    pub fn stop_analysis(
+        &mut self,
+        workspace: &Workspace,
+        analysis: &Analysis,
+    ) -> AspResult<()> {
+        unsafe {
+            let c_ws = build_c_workspace_id(workspace.id)?;
+            let c_an = build_c_analysis_id(analysis.id)?;
+            let rc = sys::asp_connection_stop_analysis(self.conn, c_ws, c_an);
+            sys::asp_analysis_free(c_an);
+            sys::asp_workspace_free(c_ws);
+            if rc != 0 {
+                return Err(asp_error(rc));
+            }
+            Ok(())
+        }
     }
 
-    /// Destroy a completed or stopped analysis on the server.
+    /// Release server resources associated with a completed or stopped analysis.
     pub fn destroy_analysis(
         &mut self,
         workspace: &Workspace,
         analysis: &Analysis,
     ) -> AspResult<()> {
-        let params = json!({
-            "workspace_id": workspace.id,
-            "analysis_id":  analysis.id,
-        });
-        self.send_request("analysis_destroy", params)?;
-        debug!("analysis {} destroyed", analysis.id);
-        Ok(())
+        unsafe {
+            let c_ws = build_c_workspace_id(workspace.id)?;
+            let c_an = build_c_analysis_id(analysis.id)?;
+            let rc = sys::asp_connection_destroy_analysis(self.conn, c_ws, c_an);
+            sys::asp_analysis_free(c_an);
+            sys::asp_workspace_free(c_ws);
+            if rc != 0 {
+                return Err(asp_error(rc));
+            }
+            debug!("analysis {} destroyed", analysis.id);
+            Ok(())
+        }
     }
 
     /// Retrieve the full result of a finished analysis.
@@ -232,407 +833,163 @@ impl Connection {
         workspace: &Workspace,
         analysis: &Analysis,
     ) -> AspResult<AnalysisResult> {
-        let params = json!({
-            "workspace_id": workspace.id,
-            "analysis_id":  analysis.id,
-        });
-        let result = self.send_request("analysis_result_get", params)?;
-        let data = &result["data"];
-
-        // ── SARIF report ─────────────────────────────────────────────────
-        let sarif_value = &data["report"];
-        let sarif_text = if !sarif_value.is_null() {
-            serde_json::to_string(sarif_value).ok()
-        } else {
-            None
-        };
-
-        let mut reports = Vec::new();
-        if let Some(runs) = sarif_value["runs"].as_array() {
-            for run in runs {
-                if let Some(results) = run["results"].as_array() {
-                    for r in results {
-                        let rule_id =
-                            r["ruleId"].as_str().map(|s| s.to_string());
-                        let severity = ReportSeverity::from_sarif(
-                            r["level"].as_str().unwrap_or(""),
-                        );
-                        let explanation =
-                            r["message"]["text"].as_str().map(|s| s.to_string());
-
-                        let mut file: Option<String> = None;
-                        let mut line: u32 = 0;
-                        let mut column: u32 = 0;
-
-                        if let Some(locs) = r["locations"].as_array() {
-                            if let Some(loc) = locs.first() {
-                                let phys = &loc["physicalLocation"];
-                                let uri = phys["artifactLocation"]["uri"]
-                                    .as_str()
-                                    .unwrap_or("");
-                                // Strip the "file://" scheme prefix when present.
-                                let path = uri
-                                    .strip_prefix("file://")
-                                    .unwrap_or(uri);
-                                if !path.is_empty() {
-                                    file = Some(path.to_string());
-                                }
-                                line = phys["region"]["startLine"]
-                                    .as_u64()
-                                    .unwrap_or(0) as u32;
-                                column = phys["region"]["startColumn"]
-                                    .as_u64()
-                                    .unwrap_or(0) as u32;
-                            }
-                        }
-
-                        reports.push(Report {
-                            file,
-                            rule_id,
-                            explanation,
-                            line_content: None,
-                            line,
-                            column,
-                            severity,
-                        });
-                    }
-                }
+        unsafe {
+            let c_ws     = build_c_workspace_id(workspace.id)?;
+            let c_an     = build_c_analysis_id(analysis.id)?;
+            let c_result = sys::asp_analysis_result_create();
+            if c_result.is_null() {
+                sys::asp_analysis_free(c_an);
+                sys::asp_workspace_free(c_ws);
+                return Err(AspError::NoMemory);
             }
+
+            let rc = sys::asp_connection_get_analysis_result(
+                self.conn, c_ws, c_an, c_result,
+            );
+            sys::asp_analysis_free(c_an);
+            sys::asp_workspace_free(c_ws);
+
+            if rc != 0 {
+                sys::asp_analysis_result_free(c_result);
+                return Err(asp_error(rc));
+            }
+
+            // ── Convert the C result tree into Rust types ─────────────────
+
+            // Defect reports
+            let reports = walk_reports(sys::asp_analysis_result_get_report(c_result));
+
+            // SARIF raw text (struct field, no dedicated getter in public API)
+            let sarif_text = cstr_to_string((*c_result).sarif_text as *const c_char);
+
+            // Per-file symbol data
+            let symbol_data = walk_symbol_locations(
+                sys::asp_analysis_result_get_symloc(c_result, SYM_LOC_PER_FILE),
+            );
+
+            // Connected-area symbol data
+            let connected_symbol_data = walk_symbol_locations(
+                sys::asp_analysis_result_get_symloc(c_result, SYM_LOC_CONNECTED_AREAS),
+            );
+
+            // Call map
+            let symbol_calls =
+                walk_symbol_calls(sys::asp_analysis_result_get_symcall(c_result));
+
+            // Language identification
+            let identification_files = walk_ident_files(
+                sys::asp_analysis_result_get_identification_file(c_result),
+            );
+
+            sys::asp_analysis_result_free(c_result);
+
+            Ok(AnalysisResult {
+                sarif_text,
+                reports,
+                symbol_data,
+                connected_symbol_data,
+                symbol_calls,
+                identification_files,
+            })
         }
-
-        // ── Symbol data ───────────────────────────────────────────────────
-        let symbol_data = data["symbol_data"]
-            .as_array()
-            .map(|a| a.iter().map(parse_symbol_location).collect())
-            .unwrap_or_default();
-
-        let connected_symbol_data = data["connected_symbol_data"]
-            .as_array()
-            .map(|a| a.iter().map(parse_symbol_location).collect())
-            .unwrap_or_default();
-
-        let symbol_calls = data["symbol_calls"]
-            .as_array()
-            .map(|a| a.iter().map(parse_symbol_call).collect())
-            .unwrap_or_default();
-
-        // ── Identification ────────────────────────────────────────────────
-        let identification_files = data["identification"]
-            .as_array()
-            .map(|a| a.iter().map(parse_identification_file).collect())
-            .unwrap_or_default();
-
-        Ok(AnalysisResult {
-            sarif_text,
-            reports,
-            symbol_data,
-            connected_symbol_data,
-            symbol_calls,
-            identification_files,
-        })
     }
 
-    /// Retrieve the current execution state of an analysis.
+    /// Retrieve the current execution state (phase, progress) of an analysis.
     pub fn get_analysis_state(
         &mut self,
         workspace: &Workspace,
         analysis: &Analysis,
     ) -> AspResult<AnalysisState> {
-        let params = json!({
-            "workspace_id": workspace.id,
-            "analysis_id":  analysis.id,
-        });
-        let result = self.send_request("analysis_state_get", params)?;
-
-        let phase_raw = result["phase"].as_u64().unwrap_or(0) as u32;
-        let phase = AnalysisPhase::try_from(phase_raw).unwrap_or_default();
-
-        Ok(AnalysisState {
-            current_job:     result["current_job"].as_i64().unwrap_or(0) as i32,
-            job_count:       result["job_count"].as_i64().unwrap_or(0) as i32,
-            phase,
-            current:         result["current"].as_i64().unwrap_or(0) as i32,
-            total:           result["total"].as_i64().unwrap_or(0) as i32,
-            progress:        result["progress"].as_i64().unwrap_or(0) as i32,
-            progress_entity: result["progress_entity"]
-                .as_str()
-                .unwrap_or("")
-                .to_string(),
-        })
-    }
-
-    /// Retrieve a list of all analyses known to the server.
-    pub fn get_analyses(&mut self) -> AspResult<Vec<AnalysisOutline>> {
-        let result = self.send_request("analysis_list", json!({}))?;
-        let mut list = Vec::new();
-        if let Some(arr) = result["analysis"].as_array() {
-            for v in arr {
-                list.push(AnalysisOutline {
-                    id:           v["id"].as_u64().unwrap_or(0) as u32,
-                    workspace_id: v["workspace_id"].as_u64().unwrap_or(0) as u32,
-                });
+        unsafe {
+            let c_ws    = build_c_workspace_id(workspace.id)?;
+            let c_an    = build_c_analysis_id(analysis.id)?;
+            let c_state = sys::asp_analysis_state_create();
+            if c_state.is_null() {
+                sys::asp_analysis_free(c_an);
+                sys::asp_workspace_free(c_ws);
+                return Err(AspError::NoMemory);
             }
+
+            let rc = sys::asp_connection_get_analysis_state(
+                self.conn, c_ws, c_an, c_state,
+            );
+            sys::asp_analysis_free(c_an);
+            sys::asp_workspace_free(c_ws);
+
+            if rc != 0 {
+                sys::asp_analysis_state_free(c_state);
+                return Err(asp_error(rc));
+            }
+
+            // progress_entity is documented as "to be freed with free()"
+            let entity_raw = sys::asp_analysis_state_get_progress_entity(c_state);
+            let progress_entity =
+                cstr_to_string_free(entity_raw).unwrap_or_default();
+
+            let state = AnalysisState {
+                current_job:     sys::asp_analysis_state_get_current_job(c_state),
+                job_count:       sys::asp_analysis_state_get_job_count(c_state),
+                phase:           from_c_phase(sys::asp_analysis_state_get_phase(c_state)),
+                current:         sys::asp_analysis_state_get_current(c_state),
+                total:           sys::asp_analysis_state_get_total(c_state),
+                progress:        sys::asp_analysis_state_get_progress(c_state),
+                progress_entity,
+            };
+
+            sys::asp_analysis_state_free(c_state);
+            Ok(state)
         }
-        Ok(list)
     }
 
-    /// Block the calling thread until the analysis reaches
-    /// [`AnalysisPhase::Finished`], polling every 500 ms.
+    /// Return a list of all analyses currently known to the server.
+    pub fn get_analyses(&mut self) -> AspResult<Vec<AnalysisOutline>> {
+        unsafe {
+            let mut head: *mut sys::asp_analysis_outline = std::ptr::null_mut();
+            let rc = sys::asp_connection_get_analyses(self.conn, &mut head);
+            if rc != 0 {
+                return Err(asp_error(rc));
+            }
+
+            let mut out = Vec::new();
+            let mut ptr = head;
+            while !ptr.is_null() {
+                out.push(AnalysisOutline {
+                    id:           sys::asp_analysis_outline_get_id(ptr),
+                    workspace_id: sys::asp_analysis_outline_get_workspace_id(ptr),
+                });
+                ptr = sys::asp_analysis_outline_next(ptr);
+            }
+
+            // Free the outline list
+            let mut ptr = head;
+            while !ptr.is_null() {
+                let next = sys::asp_analysis_outline_next(ptr);
+                sys::asp_analysis_outline_free(ptr);
+                ptr = next;
+            }
+
+            Ok(out)
+        }
+    }
+
+    /// Block the calling thread until the analysis reaches the *Finished*
+    /// phase.  Delegates entirely to `asp_connection_wait_analysis` in libasp.
     pub fn wait_analysis(
         &mut self,
-        workspace: &Workspace,
+        _workspace: &Workspace,
         analysis: &Analysis,
     ) -> AspResult<()> {
-        loop {
-            let state = self.get_analysis_state(workspace, analysis)?;
-            debug!(
-                "analysis {} — phase={:?} progress={}%  [{}/{}]",
-                analysis.id, state.phase, state.progress, state.current, state.total
-            );
-            if state.phase == AnalysisPhase::Finished {
-                return Ok(());
+        unsafe {
+            // The C function only needs the analysis handle, not the workspace.
+            let c_an = build_c_analysis_id(analysis.id)?;
+            debug!("waiting for analysis {} to finish…", analysis.id);
+            let rc = sys::asp_connection_wait_analysis(self.conn, c_an);
+            sys::asp_analysis_free(c_an);
+            if rc != 0 {
+                return Err(asp_error(rc));
             }
-            thread::sleep(Duration::from_millis(500));
+            debug!("analysis {} finished", analysis.id);
+            Ok(())
         }
     }
-}
-
-// ---------------------------------------------------------------------------
-// Private transport layer
-// ---------------------------------------------------------------------------
-
-impl Connection {
-    /// Build and send a JSON-RPC 2.0 request, then read and return the
-    /// `"result"` value from the response.
-    ///
-    /// Returns `AspError::Fail` when the server replies with an error object,
-    /// and `AspError::MalformedResult` when the response cannot be parsed.
-    fn send_request(&mut self, method: &str, params: Value) -> AspResult<Value> {
-        let id = REQUEST_ID.fetch_add(1, Ordering::Relaxed);
-        let request = json!({
-            "jsonrpc": "2.0",
-            "method":  method,
-            "params":  params,
-            "id":      id,
-        });
-
-        let mut wire = serde_json::to_string(&request)?;
-        wire.push('\n');
-        debug!("ASP --> {}", wire.trim_end());
-        self.stream.write_all(wire.as_bytes())?;
-
-        let mut line = String::new();
-        self.reader.read_line(&mut line)?;
-        debug!("ASP <-- {}", line.trim_end());
-
-        let response: Value = serde_json::from_str(&line)?;
-
-        if let Some(err) = response.get("error") {
-            let msg = err["message"].as_str().unwrap_or("(no message)");
-            error!("ASP server error (method={}): {}", method, msg);
-            return Err(AspError::Fail);
-        }
-
-        match response.get("result") {
-            Some(v) => Ok(v.clone()),
-            None => {
-                error!("ASP response missing 'result' field for method={}", method);
-                Err(AspError::MalformedResult)
-            }
-        }
-    }
-}
-
-// ---------------------------------------------------------------------------
-// JSON serialisation helpers
-// ---------------------------------------------------------------------------
-
-/// Serialise an [`Environment`] into a JSON object suitable for the wire
-/// protocol.
-fn env_to_json(env: &Environment) -> Value {
-    let mut obj = json!({});
-
-    if let Some(c) = &env.compiler {
-        obj["compiler"] = serde_json::to_value(c).unwrap_or(Value::Null);
-    }
-    if let Some(c) = &env.cpu {
-        obj["cpu"] = serde_json::to_value(c).unwrap_or(Value::Null);
-    }
-    if let Some(l) = &env.language {
-        obj["language"] = serde_json::to_value(l).unwrap_or(Value::Null);
-    }
-    if let Some(o) = &env.runtime_os {
-        obj["runtime_os"] = serde_json::to_value(o).unwrap_or(Value::Null);
-    }
-    if let Some(wk) = &env.windows_kit {
-        obj["windows_kit"] = json!(wk);
-    }
-    if let Some(vct) = &env.vctools {
-        obj["vctools"] = json!(vct);
-    }
-    if let Some(loc) = &env.locale {
-        obj["locale"] = json!(loc);
-    }
-    if env.override_higher_level {
-        obj["override_higher_level"] = json!(1u32);
-    }
-    if !env.include_dirs.is_empty() {
-        obj["file"] = Value::Array(
-            env.include_dirs
-                .iter()
-                .map(|d| json!({ "address": address_to_json(&d.address) }))
-                .collect(),
-        );
-    }
-
-    obj
-}
-
-/// Serialise an [`Address`] into a JSON object.
-fn address_to_json(addr: &Address) -> Value {
-    let mut obj = json!({});
-    if let Some(urn) = &addr.urn {
-        obj["urn"] = json!(urn);
-    }
-    if let Some(port) = addr.port {
-        obj["port"] = json!(port);
-    }
-    obj
-}
-
-/// Serialise a [`File`] into a JSON object.
-fn file_to_json(file: &File) -> Value {
-    let mut obj = json!({ "address": address_to_json(&file.address) });
-    if let Some(env) = &file.env {
-        obj["environment"] = env_to_json(env);
-    }
-    obj
-}
-
-/// Serialise a slice of [`File`]s into a JSON array.
-fn files_to_json(files: &[File]) -> Value {
-    Value::Array(files.iter().map(file_to_json).collect())
-}
-
-// ---------------------------------------------------------------------------
-// JSON deserialisation helpers
-// ---------------------------------------------------------------------------
-
-/// Parse a single symbol object from a JSON value.
-fn parse_symbol(v: &Value) -> Symbol {
-    Symbol {
-        namespace: v["namespace"]
-            .as_str()
-            .filter(|s| !s.is_empty())
-            .map(|s| s.to_string()),
-        name: v["name"]
-            .as_str()
-            .filter(|s| !s.is_empty())
-            .map(|s| s.to_string()),
-        resource_type: ResourceType::from_str(
-            v["resource_type"].as_str().unwrap_or("0"),
-        ),
-        origin: SymbolOrigin::from_str(v["origin"].as_str().unwrap_or("")),
-    }
-}
-
-/// Parse a symbol-location entry (a named area containing files and symbols).
-///
-/// Expected wire format:
-/// ```json
-/// {
-///   "name":   "area_name",
-///   "file":   [{ "path": "/path/to/file.c" }],
-///   "symbol": [{ "name": "func", "namespace": "ns",
-///                "origin": "from_source", "resource_type": "64" }]
-/// }
-/// ```
-fn parse_symbol_location(v: &Value) -> SymbolLocation {
-    let name = v["name"]
-        .as_str()
-        .filter(|s| !s.is_empty())
-        .map(|s| s.to_string());
-
-    let files: Vec<File> = v["file"]
-        .as_array()
-        .map(|arr| {
-            arr.iter()
-                .map(|f| File {
-                    address: Address::local_file(f["path"].as_str().unwrap_or("")),
-                    env: None,
-                })
-                .collect()
-        })
-        .unwrap_or_default();
-
-    let symbols: Vec<Symbol> = v["symbol"]
-        .as_array()
-        .map(|arr| arr.iter().map(parse_symbol).collect())
-        .unwrap_or_default();
-
-    SymbolLocation { name, files, symbols }
-}
-
-/// Parse a symbol-call entry (callers → callees mapping).
-///
-/// Expected wire format:
-/// ```json
-/// {
-///   "caller": [{ "name": "func_a", ... }],
-///   "callee": [{ "name": "func_b", ... }]
-/// }
-/// ```
-fn parse_symbol_call(v: &Value) -> SymbolCall {
-    let callers: Vec<Symbol> = v["caller"]
-        .as_array()
-        .map(|arr| arr.iter().map(parse_symbol).collect())
-        .unwrap_or_default();
-
-    let callees: Vec<Symbol> = v["callee"]
-        .as_array()
-        .map(|arr| arr.iter().map(parse_symbol).collect())
-        .unwrap_or_default();
-
-    SymbolCall { callers, callees }
-}
-
-/// Parse an identification-file entry.
-///
-/// Expected wire format:
-/// ```json
-/// {
-///   "path":   "/path/to/file.c",
-///   "report": [{ "language": "c", "status": 5 }]
-/// }
-/// ```
-fn parse_identification_file(v: &Value) -> IdentificationFile {
-    let path = v["path"].as_str().unwrap_or("");
-    let file = if path.is_empty() {
-        None
-    } else {
-        Some(File {
-            address: Address::local_file(path),
-            env: None,
-        })
-    };
-
-    let reports: Vec<IdentificationReport> = v["report"]
-        .as_array()
-        .map(|arr| {
-            arr.iter()
-                .map(|r| {
-                    let lang_str = r["language"].as_str().unwrap_or("unspecified");
-                    // Deserialise language using the serde impl (handles "c",
-                    // "cpp", "ruc", "unspecified", etc.)
-                    let language: Language =
-                        serde_json::from_value(json!(lang_str)).unwrap_or_default();
-                    let status =
-                        IdentificationStatus(r["status"].as_u64().unwrap_or(0) as u32);
-                    IdentificationReport { language, status }
-                })
-                .collect()
-        })
-        .unwrap_or_default();
-
-    IdentificationFile { file, reports }
 }
