@@ -48,8 +48,6 @@ fn main() {
     // final binary without duplicating the search logic.
     println!("cargo:lib_dir={}", lib_dir.display());
 
-
-
     // ── Rebuild triggers ──────────────────────────────────────────────────
     println!("cargo:rerun-if-changed=build.rs");
     println!("cargo:rerun-if-env-changed=LIBASP_BUILD_DIR");
