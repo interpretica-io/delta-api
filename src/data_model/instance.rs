@@ -22,24 +22,22 @@
  * DEALINGS IN THE SOFTWARE.
  */
 
-use ssh2::Session;
 use crate::data_model::conn_method::*;
 use crate::data_model::conn_status::*;
+use crate::obj_model::ssh_session::SshSession;
 
-#[repr(C)]
 pub struct Instance {
     pub conn_method: ConnMethod,
     pub conn_status: ConnStatus,
-    pub ssh_session: Option<Session>,
+    pub ssh_session: Option<SshSession>,
 }
 
-unsafe impl Send for Instance {}
-
 impl Instance {
-    pub fn new_ssh(session: Session, connected: bool) -> Instance {
-        return Instance { conn_method: ConnMethod::Ssh,
+    pub fn new_ssh(session: SshSession, connected: bool) -> Instance {
+        Instance {
+            conn_method: ConnMethod::Ssh,
             conn_status: ConnStatus::new(connected),
-            ssh_session: Some(session)
-        };
+            ssh_session: Some(session),
+        }
     }
 }

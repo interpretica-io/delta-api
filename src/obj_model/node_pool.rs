@@ -23,26 +23,20 @@
  */
 
 use crate::data_model::conn_alive_status::*;
-use crate::data_model::deploy_subject::DeploySubject;
-use crate::data_model::result::run_result::RunResult;
-use crate::data_model::instance::Instance;
 use crate::data_model::conn_status::ConnStatus;
+use crate::data_model::deploy_subject::DeploySubject;
+use crate::data_model::instance::Instance;
 use crate::data_model::node_parameters::NodeParameters;
 use crate::data_model::result::add_result::AddResult;
 use crate::data_model::result::connect_result::ConnectResult;
 use crate::data_model::result::deploy_result::DeployResult;
 use crate::data_model::result::disconnect_result::DisconnectResult;
 use crate::data_model::result::remove_result::RemoveResult;
+use crate::data_model::result::run_result::RunResult;
 use crate::obj_model::node::Node;
-use log::error;
-use log::info;
-use ssh2::Session;
+use crate::obj_model::ssh_session::SshSession;
+use log::{error, info};
 use std::collections::HashMap;
-use std::fs::File;
-use std::io::Write;
-use std::io::{BufReader, Read};
-use std::net::TcpStream;
-use std::path::Path;
 
 pub struct NodePool {
     pub nodes: HashMap<String, Node>,
@@ -50,28 +44,24 @@ pub struct NodePool {
     pub str_params: HashMap<String, String>,
 }
 
-unsafe impl Send for NodePool {}
-
 impl NodePool {
     pub fn new() -> NodePool {
-        return NodePool {
+        NodePool {
             nodes: HashMap::new(),
             instances: HashMap::new(),
             str_params: HashMap::new(),
-        };
+        }
     }
 
     pub fn get_node_param(&self, node: &Node, param: NodeParameters) -> String {
         let sparam = param.to_string();
-        if node.str_params.contains_key(&sparam) {
-            return node.str_params[&sparam].clone();
+        if let Some(v) = node.str_params.get(&sparam) {
+            return v.clone();
         }
-
-        if self.str_params.contains_key(&sparam) {
-            return self.str_params[&sparam].clone();
+        if let Some(v) = self.str_params.get(&sparam) {
+            return v.clone();
         }
-
-        return "".to_string();
+        String::new()
     }
 
     pub fn add(
@@ -89,47 +79,52 @@ impl NodePool {
             name,
             Node {
                 fqdn: fqdn.clone(),
-                str_params: node_params.clone(),
+                str_params: node_params,
             },
         );
 
         info!("Added node {}", fqdn);
-        return AddResult::Ok;
+        AddResult::Ok
     }
 
     pub fn is_connected(&self, name: String) -> ConnStatus {
-        if self.instances.contains_key(&name) {
-            return self.instances[&name].conn_status.clone();
+        if let Some(inst) = self.instances.get(&name) {
+            return inst.conn_status.clone();
         }
-        return ConnStatus::new(false);
+        ConnStatus::new(false)
     }
 
     pub fn is_alive(&self, name: String) -> ConnAliveStatus {
         let mut conn_alive_status = ConnAliveStatus::new();
-
         let mut subj_alive_status = SubjectAliveStatus::new();
-        if self.instances.contains_key(&name) {
-            let inst = &self.instances[&name];
-            let ssh_session = &inst.ssh_session.as_ref().unwrap();
-            let pid = self.execute(ssh_session, "cat /tmp/visao/pid".to_string());
-            if pid.trim().parse::<u64>().is_ok() {
-                let runs = self.execute(ssh_session, format!("kill -0 {} && echo runs", pid.trim()));
-                if runs.contains("runs")
-                {
-                    let bind_addr = self.execute(ssh_session, "cat /tmp/visao/bind_addr".to_string());
-                    let bind_port = self.execute(ssh_session, "cat /tmp/visao/bind_port".to_string());
 
-                    if bind_port.trim().parse::<u16>().is_ok() {
-                        subj_alive_status.alive = true;
-                        subj_alive_status.bind_addr = bind_addr.trim().to_string();
-                        subj_alive_status.bind_port = bind_port.trim().parse::<u16>().unwrap();
+        if let Some(inst) = self.instances.get(&name) {
+            if let Some(sess) = inst.ssh_session.as_ref() {
+                let pid = Self::sess_exec(sess, "cat /tmp/visao/pid");
+                if pid.trim().parse::<u64>().is_ok() {
+                    let runs = Self::sess_exec(
+                        sess,
+                        &format!("kill -0 {} && echo runs", pid.trim()),
+                    );
+                    if runs.contains("runs") {
+                        let bind_addr =
+                            Self::sess_exec(sess, "cat /tmp/visao/bind_addr");
+                        let bind_port =
+                            Self::sess_exec(sess, "cat /tmp/visao/bind_port");
+                        if let Ok(port) = bind_port.trim().parse::<u16>() {
+                            subj_alive_status.alive = true;
+                            subj_alive_status.bind_addr = bind_addr.trim().to_string();
+                            subj_alive_status.bind_port = port;
+                        }
                     }
                 }
             }
         }
 
-        conn_alive_status.subjects.insert(DeploySubject::Sa, subj_alive_status);
-        return conn_alive_status;
+        conn_alive_status
+            .subjects
+            .insert(DeploySubject::Sa, subj_alive_status);
+        conn_alive_status
     }
 
     pub fn connect(&mut self, name: String) -> ConnectResult {
@@ -143,34 +138,31 @@ impl NodePool {
         }
 
         let node = &self.nodes[&name];
-        let tcp = TcpStream::connect(node.fqdn.clone()).unwrap();
-        let mut sess = Session::new().unwrap();
-        sess.set_tcp_stream(tcp);
-        sess.handshake().unwrap();
-        let auth_result = sess.userauth_password(
-            &self.get_node_param(node, NodeParameters::Username),
-            &self.get_node_param(node, NodeParameters::Password),
-        );
-        match auth_result {
-            Ok(_r) => {}
+        let user = self.get_node_param(node, NodeParameters::Username);
+        let password = self.get_node_param(node, NodeParameters::Password);
+
+        // Default port 22 unless an explicit `host:port` was supplied as fqdn.
+        let addr = if node.fqdn.contains(':') {
+            node.fqdn.clone()
+        } else {
+            format!("{}:22", node.fqdn)
+        };
+
+        let sess = match SshSession::connect(&addr, &user, &password) {
+            Ok(s) => s,
             Err(e) => {
-                error!("Credentials not accepted: {} (error '{}')", name, e);
+                error!("SSH connect failed for {}: {}", name, e);
                 return ConnectResult::NotAuthenticated;
             }
-        }
+        };
 
-        if !sess.authenticated() {
-            error!("Failed to authenticate: {}", name);
-            return ConnectResult::NotAuthenticated;
-        }
-
-        let plat = self.execute(&sess, "uname -a".to_string());
+        let plat = Self::sess_exec(&sess, "uname -a");
         let mut inst = Instance::new_ssh(sess, true);
         inst.conn_status.platform = plat;
         self.instances.insert(name.clone(), inst);
 
         info!("Connected node: {}", name);
-        return ConnectResult::Ok;
+        ConnectResult::Ok
     }
 
     pub fn disconnect(&mut self, name: String) -> DisconnectResult {
@@ -179,12 +171,14 @@ impl NodePool {
             return DisconnectResult::NodeNotFound;
         }
 
-        if self.instances.contains_key(&name) {
-            self.instances.remove(&name);
+        if let Some(inst) = self.instances.remove(&name) {
+            if let Some(sess) = inst.ssh_session.as_ref() {
+                sess.disconnect();
+            }
         }
 
         info!("Disconnected node: {}", name);
-        return DisconnectResult::Ok;
+        DisconnectResult::Ok
     }
 
     pub fn remove(&mut self, name: String) -> RemoveResult {
@@ -194,21 +188,20 @@ impl NodePool {
         }
 
         self.nodes.remove(&name);
-
-        if self.instances.contains_key(&name) {
-            self.instances.remove(&name);
+        if let Some(inst) = self.instances.remove(&name) {
+            if let Some(sess) = inst.ssh_session.as_ref() {
+                sess.disconnect();
+            }
         }
 
         info!("Removed node: {}", name);
-        return RemoveResult::Ok;
+        RemoveResult::Ok
     }
 
     pub fn deploy(&mut self, name: String, subject: DeploySubject) -> DeployResult {
         if subject == DeploySubject::Delta {
             return DeployResult::InvalidArgument;
         }
-
-        // Deploy Sa
 
         if !self.nodes.contains_key(&name) {
             error!("Node doesn't exist: {}", name);
@@ -220,7 +213,7 @@ impl NodePool {
             return DeployResult::NodeNotConnected;
         }
 
-        let node = &self.nodes[&name];
+        let node = self.nodes[&name].clone();
         let inst = &self.instances[&name];
 
         let mut conn_status = inst.conn_status.clone();
@@ -231,46 +224,42 @@ impl NodePool {
         subject_st.deploy_archive_extracted = false;
         subject_st.deploy_archive_tested = false;
 
-        if !self.upload_file(
-            &inst.ssh_session.as_ref().unwrap(),
-            self.get_node_param(node, NodeParameters::Distr),
-            "/tmp/visao-archive.tar.xz".to_string(),
-        ) {
+        let sess = inst.ssh_session.as_ref().unwrap();
+        let distr = self.get_node_param(&node, NodeParameters::Distr);
+
+        if !sess
+            .upload_file(&distr, "/tmp/visao-archive.tar.xz")
+            .unwrap_or(false)
+        {
             conn_status.set_subject(subject, subject_st);
             self.set_state(name, conn_status);
             return DeployResult::DeployCopyFailed;
         }
-
         subject_st.deploy_archive_copied = true;
 
-        if self.execute(
-            &inst.ssh_session.as_ref().unwrap(),
-            "tar xvf /tmp/visao-archive.tar.xz -C /tmp/visao > /dev/null 2> /dev/null && echo ok".to_string(),
-        ) == ""
-        {
+        let extract = Self::sess_exec(
+            sess,
+            "tar xvf /tmp/visao-archive.tar.xz -C /tmp/visao > /dev/null 2> /dev/null && echo ok",
+        );
+        if extract.trim().is_empty() {
             conn_status.set_subject(subject, subject_st);
             self.set_state(name, conn_status);
             return DeployResult::DeployExtractionFailed;
         }
-
         subject_st.deploy_archive_extracted = true;
 
-        if self.execute(
-            &inst.ssh_session.as_ref().unwrap(),
-            "/tmp/visao/bin/visao --version".to_string(),
-        ) == ""
-        {
+        let version = Self::sess_exec(sess, "/tmp/visao/bin/visao --version");
+        if version.trim().is_empty() {
             conn_status.set_subject(subject, subject_st);
             self.set_state(name, conn_status);
             return DeployResult::DeployTestFailed;
         }
-
         subject_st.deploy_archive_tested = true;
 
         subject_st.deployed = true;
         conn_status.set_subject(subject, subject_st);
         self.set_state(name, conn_status);
-        return DeployResult::Ok;
+        DeployResult::Ok
     }
 
     pub fn run(&mut self, name: String, subject: DeploySubject) -> RunResult {
@@ -284,36 +273,34 @@ impl NodePool {
             return RunResult::NodeNotConnected;
         }
 
-        let node = &self.nodes[&name];
+        let node = self.nodes[&name].clone();
         let inst = &self.instances[&name];
+        let sess = inst.ssh_session.as_ref().unwrap();
 
         let mut conn_status = inst.conn_status.clone();
         let mut subject_st = conn_status.get_subject(subject.clone());
-
         subject_st.running = false;
 
-        /* Infer bind addr/bind port */
+        // Kill existing instance, if any.
+        let _ = Self::sess_exec(
+            sess,
+            "/bin/bash -c 'test -f /tmp/visao/pid && test $(cat /tmp/visao/pid) -gt 0 && kill $(cat /tmp/visao/pid)'",
+        );
 
-        /* Kill existing instance, if exists */
-        let _exec_result = self.execute(
-            &inst.ssh_session.as_ref().unwrap(),
-            "/bin/bash -c 'test -f /tmp/visao/pid && test $(cat /tmp/visao/pid) -gt 0 && kill $(cat /tmp/visao/pid)'".to_string());
+        let (bind_addr, bind_port) = self.infer_conn_params(&node);
+        let commands = vec![
+            format!(
+                "/tmp/visao/bin/visao --server 'tcp://{}:{}' < /dev/null > /dev/null 2> /dev/null &",
+                bind_addr, bind_port
+            ),
+            "echo $! > /tmp/visao/pid".to_string(),
+            format!("echo {} > /tmp/visao/bind_addr", bind_addr),
+            format!("echo {} > /tmp/visao/bind_port", bind_port),
+            "sleep 4".to_string(),
+            "kill -0 \"$(cat /tmp/visao/pid)\" && echo pid \"$(cat /tmp/visao/pid)\"".to_string(),
+        ];
 
-        /* Run new instance */
-        let conn_params = self.infer_conn_params(node);
-        let mut commands = Vec::<String>::new();
-        commands.push("/tmp/visao/bin/visao --server 'tcp://".to_owned() + &conn_params.0 + ":" + &conn_params.1 + "' < /dev/null > /dev/null 2> /dev/null &");
-        commands.push("echo $! > /tmp/visao/pid".to_string());
-        commands.push("echo ".to_owned() + &conn_params.0 + " > /tmp/visao/bind_addr");
-        commands.push("echo ".to_owned() + &conn_params.1 + " > /tmp/visao/bind_port");
-        commands.push("sleep 4".to_string());
-        commands.push("kill -0 \"$(cat /tmp/visao/pid)\" && echo pid \"$(cat /tmp/visao/pid)\"".to_string());
-
-        let exec_result = self.execute_vec(
-            &inst.ssh_session.as_ref().unwrap(),
-            commands);
-
-        /* Check result */
+        let exec_result = sess.shell_exec(&commands).unwrap_or_default();
         if !exec_result.contains("pid") {
             conn_status.set_subject(subject, subject_st);
             self.set_state(name, conn_status);
@@ -323,116 +310,43 @@ impl NodePool {
         subject_st.running = true;
         conn_status.set_subject(subject, subject_st);
         self.set_state(name, conn_status);
-        return RunResult::Ok;
+        RunResult::Ok
     }
 
-    fn upload_file(&self, sess: &Session, local_path: String, remote_path: String) -> bool {
-        let file = File::open(local_path);
-        let file = match file {
-            Ok(f) => f,
+    fn sess_exec(sess: &SshSession, cmd: &str) -> String {
+        match sess.exec(cmd) {
+            Ok(r) => r.stdout,
             Err(e) => {
-                error!("Failed to open local file: {}", e);
-                return false;
-            }
-        };
-
-        let metadata = file.metadata();
-        let metadata = match metadata {
-            Ok(m) => m,
-            Err(e) => {
-                error!("Failed to get file metadata: {}", e);
-                return false;
-            }
-        };
-        let file_size = metadata.len();
-
-        let remote_file = sess.scp_send(Path::new(&remote_path), 0o644, file_size, None);
-
-        match remote_file {
-            Ok(ref _n) => {}
-            Err(_e) => {
-                return false;
+                error!("SSH exec failed ({}): {}", cmd, e);
+                String::new()
             }
         }
+    }
 
-        let mut remote_file = remote_file.unwrap();
-        let mut reader = BufReader::new(file);
-        let mut buffer = vec![0; 4096];
-        loop {
-            let n = reader.read(&mut buffer);
-            match n {
-                Ok(_n) => {}
-                Err(_e) => {
-                    break;
-                }
-            }
-
-            let n = n.unwrap();
-            if n == 0 {
-                break;
-            }
-
-            let _ = remote_file.write_all(&buffer[..n]);
+    fn set_state(&mut self, name: String, conn_status: ConnStatus) {
+        if let Some(inst) = self.instances.get_mut(&name) {
+            inst.conn_status = conn_status;
         }
-
-        remote_file.send_eof().unwrap();
-        remote_file.wait_eof().unwrap();
-        remote_file.close().unwrap();
-        remote_file.wait_close().unwrap();
-        return true;
-    }
-
-    fn execute(&self, sess: &Session, cmd: String) -> String {
-        let mut channel = sess.channel_session().unwrap();
-        channel.exec(&cmd).unwrap();
-        let mut s = String::new();
-        channel.read_to_string(&mut s).unwrap();
-        let _ = channel.wait_close();
-
-        return s;
-    }
-
-    fn execute_vec(&self, sess: &Session, commands: Vec<String>) -> String {
-        let mut channel = sess.channel_session().unwrap();
-        let mut exec_result : String = "".to_string();
-        channel.shell().unwrap();
-        for command in commands {
-            channel.write_all(command.as_bytes()).unwrap();
-            channel.write_all(b"\n").unwrap();
-        }
-        channel.send_eof().unwrap();
-        channel.read_to_string(&mut exec_result).unwrap();
-
-        return exec_result;
-    }
-
-    fn set_state(&mut self, name: String, conn_status: ConnStatus)
-    {
-        let m = self.instances.get_mut(&name);
-        m.unwrap().conn_status = conn_status.clone();
     }
 
     fn infer_conn_params(&self, node: &Node) -> (String, String) {
         let mut bind_addr = self.get_node_param(node, NodeParameters::BindAddr);
-
-        if bind_addr.contains("'") || bind_addr.contains("\"") {
+        if bind_addr.contains('\'') || bind_addr.contains('"') {
             error!("Reset bind address due to bad symbols: {}", bind_addr);
-            bind_addr = "".to_string();
+            bind_addr.clear();
         }
-
-        if bind_addr == "" {
+        if bind_addr.is_empty() {
             bind_addr = "127.0.0.1".to_string();
         }
 
         let mut bind_port = self.get_node_param(node, NodeParameters::BindPort);
-        if !bind_port.parse::<u16>().is_ok() {
+        if bind_port.parse::<u16>().is_err() {
             error!("Reset bind port due to bad symbols: {}", bind_port);
-            bind_port = "".to_string();
+            bind_port.clear();
         }
-        if bind_port == "" {
+        if bind_port.is_empty() {
             bind_port = "5700".to_string();
         }
-        return (bind_addr, bind_port)
-
+        (bind_addr, bind_port)
     }
 }

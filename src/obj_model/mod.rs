@@ -23,7 +23,8 @@
  */
 
 #[cfg(feature = "object_model")]
-
 pub mod node;
 #[cfg(feature = "object_model")]
 pub mod node_pool;
+#[cfg(feature = "object_model")]
+pub mod ssh_session;
