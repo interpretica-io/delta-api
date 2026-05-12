@@ -22,10 +22,10 @@
  * DEALINGS IN THE SOFTWARE.
  */
 
-use serde::{Deserialize, Serialize};
+use super::identification::IdentificationFile;
 use super::report::Report;
 use super::symbol::{SymbolCall, SymbolLocation};
-use super::identification::IdentificationFile;
+use serde::{Deserialize, Serialize};
 
 /// Complete analysis result
 #[derive(Serialize, Deserialize, PartialEq, Clone, Debug, Default)]

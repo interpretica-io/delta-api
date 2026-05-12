@@ -22,9 +22,9 @@
  * DEALINGS IN THE SOFTWARE.
  */
 
-use serde::{Deserialize, Serialize};
 use super::enums::{IdentificationStatus, Language};
 use super::file::File;
+use serde::{Deserialize, Serialize};
 
 /// Identification result for one language applied to a file
 #[derive(Serialize, Deserialize, PartialEq, Clone, Debug, Default)]

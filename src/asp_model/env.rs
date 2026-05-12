@@ -22,9 +22,9 @@
  * DEALINGS IN THE SOFTWARE.
  */
 
-use serde::{Deserialize, Serialize};
 use super::address::Address;
 use super::enums::{Compiler, Cpu, Language, Os};
+use serde::{Deserialize, Serialize};
 
 /// A single include directory entry
 #[derive(Serialize, Deserialize, PartialEq, Clone, Debug)]

@@ -194,17 +194,17 @@ impl ReportSeverity {
 pub struct ResourceType(pub u32);
 
 impl ResourceType {
-    pub const GLOBAL: u32           = 1;
-    pub const STATIC: u32           = 2;
-    pub const LOCAL: u32            = 4;
-    pub const PARAMETER: u32        = 8;
+    pub const GLOBAL: u32 = 1;
+    pub const STATIC: u32 = 2;
+    pub const LOCAL: u32 = 4;
+    pub const PARAMETER: u32 = 8;
     pub const STRUCTURE_MEMBER: u32 = 16;
-    pub const ENUM_MEMBER: u32      = 32;
-    pub const METHOD: u32           = 64;
+    pub const ENUM_MEMBER: u32 = 32;
+    pub const METHOD: u32 = 64;
     pub const STANDARD_LIBRARY: u32 = 128;
-    pub const NOT_EXISTENT: u32     = 256;
-    pub const UNASSIGNED: u32       = 512;
-    pub const BUILTIN_LIBRARY: u32  = 1024;
+    pub const NOT_EXISTENT: u32 = 256;
+    pub const UNASSIGNED: u32 = 512;
+    pub const BUILTIN_LIBRARY: u32 = 1024;
 
     pub fn from_str(s: &str) -> Self {
         ResourceType(s.parse::<u32>().unwrap_or(0))
@@ -231,10 +231,10 @@ impl SymbolOrigin {
     pub fn from_str(s: &str) -> Self {
         match s.to_lowercase().replace('-', "_").as_str() {
             "from_source" | "fromsource" => SymbolOrigin::FromSource,
-            "external"                   => SymbolOrigin::External,
+            "external" => SymbolOrigin::External,
             "standard_library" | "standardlibrary" => SymbolOrigin::StandardLibrary,
-            "internal"                   => SymbolOrigin::Internal,
-            _                            => SymbolOrigin::Unknown,
+            "internal" => SymbolOrigin::Internal,
+            _ => SymbolOrigin::Unknown,
         }
     }
 }
@@ -244,9 +244,9 @@ impl SymbolOrigin {
 pub struct IdentificationStatus(pub u32);
 
 impl IdentificationStatus {
-    pub const PARSED: u32       = 1;
-    pub const WITH_ERRORS: u32  = 2;
-    pub const BEST_MATCH: u32   = 4;
+    pub const PARSED: u32 = 1;
+    pub const WITH_ERRORS: u32 = 2;
+    pub const BEST_MATCH: u32 = 4;
 
     pub fn has(&self, flag: u32) -> bool {
         self.0 & flag != 0

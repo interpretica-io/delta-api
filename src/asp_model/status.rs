@@ -41,15 +41,15 @@ pub enum AspError {
 impl fmt::Display for AspError {
     fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
         match self {
-            AspError::FdFailure          => write!(f, "file descriptor failure"),
-            AspError::ConnectionFailed   => write!(f, "connection failed"),
-            AspError::NoMemory           => write!(f, "not enough memory"),
-            AspError::Io(msg)            => write!(f, "I/O error: {}", msg),
-            AspError::MalformedResult    => write!(f, "malformed result"),
-            AspError::Fail               => write!(f, "generic failure"),
-            AspError::InvalidArgument    => write!(f, "invalid argument"),
-            AspError::NoEntry            => write!(f, "no entry found"),
-            AspError::TimedOut           => write!(f, "connection timed out"),
+            AspError::FdFailure => write!(f, "file descriptor failure"),
+            AspError::ConnectionFailed => write!(f, "connection failed"),
+            AspError::NoMemory => write!(f, "not enough memory"),
+            AspError::Io(msg) => write!(f, "I/O error: {}", msg),
+            AspError::MalformedResult => write!(f, "malformed result"),
+            AspError::Fail => write!(f, "generic failure"),
+            AspError::InvalidArgument => write!(f, "invalid argument"),
+            AspError::NoEntry => write!(f, "no entry found"),
+            AspError::TimedOut => write!(f, "connection timed out"),
         }
     }
 }

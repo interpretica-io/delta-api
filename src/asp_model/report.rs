@@ -22,8 +22,8 @@
  * DEALINGS IN THE SOFTWARE.
  */
 
-use serde::{Deserialize, Serialize};
 use super::enums::ReportSeverity;
+use serde::{Deserialize, Serialize};
 
 /// A single defect report from analysis
 #[derive(Serialize, Deserialize, PartialEq, Clone, Debug, Default)]

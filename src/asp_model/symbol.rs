@@ -22,9 +22,9 @@
  * DEALINGS IN THE SOFTWARE.
  */
 
-use serde::{Deserialize, Serialize};
 use super::enums::{ResourceType, SymbolOrigin};
 use super::file::File;
+use serde::{Deserialize, Serialize};
 
 /// A global symbol (variable or function)
 #[derive(Serialize, Deserialize, PartialEq, Clone, Debug, Default)]

@@ -23,8 +23,8 @@
  */
 
 use crate::data_model::deploy_subject::DeploySubject;
-use std::collections::HashMap;
 use serde::{Deserialize, Serialize};
+use std::collections::HashMap;
 
 #[derive(Serialize, Deserialize, PartialEq, Clone, Debug)]
 pub struct SubjectAliveStatus {
@@ -51,7 +51,7 @@ pub struct ConnAliveStatus {
 impl ConnAliveStatus {
     pub fn new() -> ConnAliveStatus {
         return ConnAliveStatus {
-            subjects: HashMap::new()
+            subjects: HashMap::new(),
         };
     }
 }

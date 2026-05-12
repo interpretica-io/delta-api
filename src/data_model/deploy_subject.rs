@@ -22,14 +22,10 @@
  * DEALINGS IN THE SOFTWARE.
  */
 
-
-use serde::{Serialize, Deserialize};
+use serde::{Deserialize, Serialize};
 
 #[allow(non_camel_case_types)]
-#[derive(strum_macros::Display)]
-#[derive(Serialize, Deserialize, PartialEq, Clone, Debug)]
-#[derive(Eq)]
-#[derive(Hash)]
+#[derive(strum_macros::Display, Serialize, Deserialize, PartialEq, Clone, Debug, Eq, Hash)]
 pub enum DeploySubject {
     Sa,
     Delta,

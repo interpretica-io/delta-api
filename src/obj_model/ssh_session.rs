@@ -103,7 +103,9 @@ impl SshSession {
                     ..Default::default()
                 });
                 let mut h = client::connect(config, addr_owned.as_str(), AcceptAnyKey).await?;
-                let auth_ok = h.authenticate_password(&user_owned, &password_owned).await?;
+                let auth_ok = h
+                    .authenticate_password(&user_owned, &password_owned)
+                    .await?;
                 if !auth_ok {
                     return Err(russh::Error::NoAuthMethod);
                 }

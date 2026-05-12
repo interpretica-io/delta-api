@@ -102,15 +102,11 @@ impl NodePool {
             if let Some(sess) = inst.ssh_session.as_ref() {
                 let pid = Self::sess_exec(sess, "cat /tmp/visao/pid");
                 if pid.trim().parse::<u64>().is_ok() {
-                    let runs = Self::sess_exec(
-                        sess,
-                        &format!("kill -0 {} && echo runs", pid.trim()),
-                    );
+                    let runs =
+                        Self::sess_exec(sess, &format!("kill -0 {} && echo runs", pid.trim()));
                     if runs.contains("runs") {
-                        let bind_addr =
-                            Self::sess_exec(sess, "cat /tmp/visao/bind_addr");
-                        let bind_port =
-                            Self::sess_exec(sess, "cat /tmp/visao/bind_port");
+                        let bind_addr = Self::sess_exec(sess, "cat /tmp/visao/bind_addr");
+                        let bind_port = Self::sess_exec(sess, "cat /tmp/visao/bind_port");
                         if let Ok(port) = bind_port.trim().parse::<u16>() {
                             subj_alive_status.alive = true;
                             subj_alive_status.bind_addr = bind_addr.trim().to_string();

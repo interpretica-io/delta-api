@@ -22,8 +22,8 @@
  * DEALINGS IN THE SOFTWARE.
  */
 
-use serde::{Deserialize, Serialize};
 use super::enums::{AnalysisJobKind, AnalysisPhase};
+use serde::{Deserialize, Serialize};
 
 /// A single analysis job specification
 #[derive(Serialize, Deserialize, PartialEq, Clone, Debug)]
@@ -32,9 +32,21 @@ pub struct AnalysisJob {
 }
 
 impl AnalysisJob {
-    pub fn defects()        -> Self { AnalysisJob { kind: AnalysisJobKind::Defects } }
-    pub fn identification() -> Self { AnalysisJob { kind: AnalysisJobKind::Identification } }
-    pub fn dependency()     -> Self { AnalysisJob { kind: AnalysisJobKind::Dependency } }
+    pub fn defects() -> Self {
+        AnalysisJob {
+            kind: AnalysisJobKind::Defects,
+        }
+    }
+    pub fn identification() -> Self {
+        AnalysisJob {
+            kind: AnalysisJobKind::Identification,
+        }
+    }
+    pub fn dependency() -> Self {
+        AnalysisJob {
+            kind: AnalysisJobKind::Dependency,
+        }
+    }
 }
 
 /// An analysis request / handle

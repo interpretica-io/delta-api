@@ -22,9 +22,9 @@
  * DEALINGS IN THE SOFTWARE.
  */
 
-use serde::{Deserialize, Serialize};
 use super::address::Address;
 use super::env::Environment;
+use serde::{Deserialize, Serialize};
 
 /// A source file with optional per-file environment override
 #[derive(Serialize, Deserialize, PartialEq, Clone, Debug)]

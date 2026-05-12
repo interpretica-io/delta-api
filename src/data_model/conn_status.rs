@@ -23,8 +23,8 @@
  */
 
 use crate::data_model::deploy_subject::DeploySubject;
-use std::collections::HashMap;
 use serde::{Deserialize, Serialize};
+use std::collections::HashMap;
 
 #[derive(Serialize, Deserialize, PartialEq, Clone, Debug)]
 pub struct SubjectStatus {
@@ -58,9 +58,11 @@ pub struct ConnStatus {
 
 impl ConnStatus {
     pub fn new(connected: bool) -> ConnStatus {
-        return ConnStatus { connected: connected,
+        return ConnStatus {
+            connected: connected,
             subjects: HashMap::new(),
-            platform: "".to_string() }
+            platform: "".to_string(),
+        };
     }
 
     pub fn get_subject(&mut self, subject: DeploySubject) -> SubjectStatus {

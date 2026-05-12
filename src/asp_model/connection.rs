@@ -47,8 +47,8 @@ use super::report::Report;
 use super::result::AnalysisResult;
 use super::status::{AspError, AspResult};
 use super::symbol::{Symbol, SymbolCall, SymbolLocation};
-use super::workspace::{Workspace, WorkspaceOutline};
 use super::sys;
+use super::workspace::{Workspace, WorkspaceOutline};
 
 // ─────────────────────────────────────────────────────────────────────────────
 // C-string helpers
@@ -103,7 +103,7 @@ fn asp_error(rc: sys::asp_status) -> AspError {
         -7 => AspError::InvalidArgument,
         -8 => AspError::NoEntry,
         -9 => AspError::TimedOut,
-        _  => AspError::Fail,
+        _ => AspError::Fail,
     }
 }
 
@@ -118,59 +118,59 @@ fn asp_error(rc: sys::asp_status) -> AspError {
 fn to_c_language(l: &Language) -> u32 {
     match l {
         Language::Unspecified => 0,
-        Language::C           => 1,
-        Language::Cpp         => 2,
-        Language::Ruc         => 3,
+        Language::C => 1,
+        Language::Cpp => 2,
+        Language::Ruc => 3,
     }
 }
 
 fn to_c_compiler(c: &Compiler) -> u32 {
     match c {
         Compiler::Unspecified => 0,
-        Compiler::Gcc         => 1,
-        Compiler::Clang       => 2,
-        Compiler::Ruc         => 3,
-        Compiler::MingwGcc    => 4,
-        Compiler::MingwClang  => 5,
-        Compiler::Msvc        => 6,
-        Compiler::ClangCl     => 7,
+        Compiler::Gcc => 1,
+        Compiler::Clang => 2,
+        Compiler::Ruc => 3,
+        Compiler::MingwGcc => 4,
+        Compiler::MingwClang => 5,
+        Compiler::Msvc => 6,
+        Compiler::ClangCl => 7,
     }
 }
 
 fn to_c_cpu(c: &Cpu) -> u32 {
     match c {
         Cpu::Unspecified => 0,
-        Cpu::X86         => 1,
-        Cpu::X8664       => 2,
-        Cpu::ArmLe       => 3,
-        Cpu::ArmBe       => 4,
-        Cpu::Arm64Le     => 5,
-        Cpu::Arm64Be     => 6,
-        Cpu::Mips32Le    => 7,
-        Cpu::Mips32Be    => 8,
-        Cpu::Mips64Le    => 9,
-        Cpu::Mips64Be    => 10,
-        Cpu::RucVm       => 11,
+        Cpu::X86 => 1,
+        Cpu::X8664 => 2,
+        Cpu::ArmLe => 3,
+        Cpu::ArmBe => 4,
+        Cpu::Arm64Le => 5,
+        Cpu::Arm64Be => 6,
+        Cpu::Mips32Le => 7,
+        Cpu::Mips32Be => 8,
+        Cpu::Mips64Le => 9,
+        Cpu::Mips64Be => 10,
+        Cpu::RucVm => 11,
     }
 }
 
 fn to_c_os(o: &Os) -> u32 {
     match o {
         Os::Unspecified => 0,
-        Os::Linux       => 1,
-        Os::Windows     => 2,
-        Os::Macos       => 3,
-        Os::Baremetal   => 4,
-        Os::RucVm       => 5,
+        Os::Linux => 1,
+        Os::Windows => 2,
+        Os::Macos => 3,
+        Os::Baremetal => 4,
+        Os::RucVm => 5,
     }
 }
 
 fn to_c_job_kind(k: &AnalysisJobKind) -> u32 {
     match k {
-        AnalysisJobKind::Unknown        => 0,
-        AnalysisJobKind::Defects        => 1,
+        AnalysisJobKind::Unknown => 0,
+        AnalysisJobKind::Defects => 1,
         AnalysisJobKind::Identification => 2,
-        AnalysisJobKind::Dependency     => 3,
+        AnalysisJobKind::Dependency => 3,
     }
 }
 
@@ -429,10 +429,10 @@ unsafe fn walk_symbols(head: *mut sys::asp_symbol) -> Vec<Symbol> {
     let mut ptr = head;
     while !ptr.is_null() {
         out.push(Symbol {
-            name:          cstr_to_string(sys::asp_symbol_get_name(ptr)),
-            namespace:     cstr_to_string(sys::asp_symbol_get_namespace(ptr)),
+            name: cstr_to_string(sys::asp_symbol_get_name(ptr)),
+            namespace: cstr_to_string(sys::asp_symbol_get_namespace(ptr)),
             resource_type: ResourceType(sys::asp_symbol_get_resource_type(ptr)),
-            origin:        from_c_symbol_origin(sys::asp_symbol_get_origin(ptr)),
+            origin: from_c_symbol_origin(sys::asp_symbol_get_origin(ptr)),
         });
         ptr = sys::asp_symbol_next(ptr);
     }
@@ -469,8 +469,8 @@ unsafe fn walk_symbol_locations(head: *mut sys::asp_symbol_location) -> Vec<Symb
     let mut ptr = head;
     while !ptr.is_null() {
         out.push(SymbolLocation {
-            name:    cstr_to_string(sys::asp_symbol_location_get_name(ptr)),
-            files:   walk_files(sys::asp_symbol_location_get_file(ptr)),
+            name: cstr_to_string(sys::asp_symbol_location_get_name(ptr)),
+            files: walk_files(sys::asp_symbol_location_get_file(ptr)),
             symbols: walk_symbols(sys::asp_symbol_location_get_symbol(ptr)),
         });
         ptr = sys::asp_symbol_location_next(ptr);
@@ -501,9 +501,7 @@ unsafe fn walk_ident_reports(
     while !ptr.is_null() {
         out.push(IdentificationReport {
             language: from_c_language(sys::asp_identification_report_get_language(ptr)),
-            status:   IdentificationStatus(
-                sys::asp_identification_report_get_status(ptr),
-            ),
+            status: IdentificationStatus(sys::asp_identification_report_get_status(ptr)),
         });
         ptr = sys::asp_identification_report_next(ptr);
     }
@@ -548,13 +546,13 @@ unsafe fn walk_reports(head: *mut sys::asp_report) -> Vec<Report> {
         let line_content = cstr_to_string_free(line_content_raw);
 
         out.push(Report {
-            file:         cstr_to_string(sys::asp_report_get_file(ptr) as *const c_char),
-            rule_id:      cstr_to_string(sys::asp_report_get_rule_id(ptr) as *const c_char),
-            explanation:  cstr_to_string(sys::asp_report_get_explanation(ptr) as *const c_char),
+            file: cstr_to_string(sys::asp_report_get_file(ptr) as *const c_char),
+            rule_id: cstr_to_string(sys::asp_report_get_rule_id(ptr) as *const c_char),
+            explanation: cstr_to_string(sys::asp_report_get_explanation(ptr) as *const c_char),
             line_content,
-            line:         sys::asp_report_get_line(ptr),
-            column:       sys::asp_report_get_column(ptr),
-            severity:     from_c_severity(sys::asp_report_get_severity(ptr)),
+            line: sys::asp_report_get_line(ptr),
+            column: sys::asp_report_get_column(ptr),
+            severity: from_c_severity(sys::asp_report_get_severity(ptr)),
         });
         ptr = sys::asp_report_next(ptr);
     }
@@ -562,7 +560,7 @@ unsafe fn walk_reports(head: *mut sys::asp_report) -> Vec<Report> {
 }
 
 // Symbol-location kind constants (match asp_analysis_result.h)
-const SYM_LOC_PER_FILE:       u32 = 0; // ASP_SYMBOL_LOCATION_KIND_PER_FILE
+const SYM_LOC_PER_FILE: u32 = 0; // ASP_SYMBOL_LOCATION_KIND_PER_FILE
 const SYM_LOC_CONNECTED_AREAS: u32 = 1; // ASP_SYMBOL_LOCATION_KIND_CONNECTED_AREAS
 
 // ─────────────────────────────────────────────────────────────────────────────
@@ -742,13 +740,9 @@ impl Connection {
     }
 
     /// Register an additional source file inside an existing workspace.
-    pub fn add_workspace_file(
-        &mut self,
-        workspace: &Workspace,
-        file: &File,
-    ) -> AspResult<()> {
+    pub fn add_workspace_file(&mut self, workspace: &Workspace, file: &File) -> AspResult<()> {
         unsafe {
-            let c_ws   = build_c_workspace_id(workspace.id)?;
+            let c_ws = build_c_workspace_id(workspace.id)?;
             let c_file = build_c_file(file)?;
             let rc = sys::asp_connection_add_workspace_file(self.conn, c_ws, c_file);
             sys::asp_file_free(c_file);
@@ -761,13 +755,9 @@ impl Connection {
     }
 
     /// Remove a source file from an existing workspace.
-    pub fn remove_workspace_file(
-        &mut self,
-        workspace: &Workspace,
-        file: &File,
-    ) -> AspResult<()> {
+    pub fn remove_workspace_file(&mut self, workspace: &Workspace, file: &File) -> AspResult<()> {
         unsafe {
-            let c_ws   = build_c_workspace_id(workspace.id)?;
+            let c_ws = build_c_workspace_id(workspace.id)?;
             let c_file = build_c_file(file)?;
             let rc = sys::asp_connection_remove_workspace_file(self.conn, c_ws, c_file);
             sys::asp_file_free(c_file);
@@ -807,11 +797,7 @@ impl Connection {
     }
 
     /// Request that the server stop a running analysis.
-    pub fn stop_analysis(
-        &mut self,
-        workspace: &Workspace,
-        analysis: &Analysis,
-    ) -> AspResult<()> {
+    pub fn stop_analysis(&mut self, workspace: &Workspace, analysis: &Analysis) -> AspResult<()> {
         unsafe {
             let c_ws = build_c_workspace_id(workspace.id)?;
             let c_an = build_c_analysis_id(analysis.id)?;
@@ -852,8 +838,8 @@ impl Connection {
         analysis: &Analysis,
     ) -> AspResult<AnalysisResult> {
         unsafe {
-            let c_ws     = build_c_workspace_id(workspace.id)?;
-            let c_an     = build_c_analysis_id(analysis.id)?;
+            let c_ws = build_c_workspace_id(workspace.id)?;
+            let c_an = build_c_analysis_id(analysis.id)?;
             let c_result = sys::asp_analysis_result_create();
             if c_result.is_null() {
                 sys::asp_analysis_free(c_an);
@@ -861,9 +847,7 @@ impl Connection {
                 return Err(AspError::NoMemory);
             }
 
-            let rc = sys::asp_connection_get_analysis_result(
-                self.conn, c_ws, c_an, c_result,
-            );
+            let rc = sys::asp_connection_get_analysis_result(self.conn, c_ws, c_an, c_result);
             sys::asp_analysis_free(c_an);
             sys::asp_workspace_free(c_ws);
 
@@ -881,23 +865,23 @@ impl Connection {
             let sarif_text = cstr_to_string((*c_result).sarif_text as *const c_char);
 
             // Per-file symbol data
-            let symbol_data = walk_symbol_locations(
-                sys::asp_analysis_result_get_symloc(c_result, SYM_LOC_PER_FILE),
-            );
+            let symbol_data = walk_symbol_locations(sys::asp_analysis_result_get_symloc(
+                c_result,
+                SYM_LOC_PER_FILE,
+            ));
 
             // Connected-area symbol data
-            let connected_symbol_data = walk_symbol_locations(
-                sys::asp_analysis_result_get_symloc(c_result, SYM_LOC_CONNECTED_AREAS),
-            );
+            let connected_symbol_data = walk_symbol_locations(sys::asp_analysis_result_get_symloc(
+                c_result,
+                SYM_LOC_CONNECTED_AREAS,
+            ));
 
             // Call map
-            let symbol_calls =
-                walk_symbol_calls(sys::asp_analysis_result_get_symcall(c_result));
+            let symbol_calls = walk_symbol_calls(sys::asp_analysis_result_get_symcall(c_result));
 
             // Language identification
-            let identification_files = walk_ident_files(
-                sys::asp_analysis_result_get_identification_file(c_result),
-            );
+            let identification_files =
+                walk_ident_files(sys::asp_analysis_result_get_identification_file(c_result));
 
             sys::asp_analysis_result_free(c_result);
 
@@ -919,8 +903,8 @@ impl Connection {
         analysis: &Analysis,
     ) -> AspResult<AnalysisState> {
         unsafe {
-            let c_ws    = build_c_workspace_id(workspace.id)?;
-            let c_an    = build_c_analysis_id(analysis.id)?;
+            let c_ws = build_c_workspace_id(workspace.id)?;
+            let c_an = build_c_analysis_id(analysis.id)?;
             let c_state = sys::asp_analysis_state_create();
             if c_state.is_null() {
                 sys::asp_analysis_free(c_an);
@@ -928,9 +912,7 @@ impl Connection {
                 return Err(AspError::NoMemory);
             }
 
-            let rc = sys::asp_connection_get_analysis_state(
-                self.conn, c_ws, c_an, c_state,
-            );
+            let rc = sys::asp_connection_get_analysis_state(self.conn, c_ws, c_an, c_state);
             sys::asp_analysis_free(c_an);
             sys::asp_workspace_free(c_ws);
 
@@ -941,16 +923,15 @@ impl Connection {
 
             // progress_entity is documented as "to be freed with free()"
             let entity_raw = sys::asp_analysis_state_get_progress_entity(c_state);
-            let progress_entity =
-                cstr_to_string_free(entity_raw).unwrap_or_default();
+            let progress_entity = cstr_to_string_free(entity_raw).unwrap_or_default();
 
             let state = AnalysisState {
-                current_job:     sys::asp_analysis_state_get_current_job(c_state),
-                job_count:       sys::asp_analysis_state_get_job_count(c_state),
-                phase:           from_c_phase(sys::asp_analysis_state_get_phase(c_state)),
-                current:         sys::asp_analysis_state_get_current(c_state),
-                total:           sys::asp_analysis_state_get_total(c_state),
-                progress:        sys::asp_analysis_state_get_progress(c_state),
+                current_job: sys::asp_analysis_state_get_current_job(c_state),
+                job_count: sys::asp_analysis_state_get_job_count(c_state),
+                phase: from_c_phase(sys::asp_analysis_state_get_phase(c_state)),
+                current: sys::asp_analysis_state_get_current(c_state),
+                total: sys::asp_analysis_state_get_total(c_state),
+                progress: sys::asp_analysis_state_get_progress(c_state),
                 progress_entity,
             };
 
@@ -972,7 +953,7 @@ impl Connection {
             let mut ptr = head;
             while !ptr.is_null() {
                 out.push(AnalysisOutline {
-                    id:           sys::asp_analysis_outline_get_id(ptr),
+                    id: sys::asp_analysis_outline_get_id(ptr),
                     workspace_id: sys::asp_analysis_outline_get_workspace_id(ptr),
                 });
                 ptr = sys::asp_analysis_outline_next(ptr);
@@ -992,11 +973,7 @@ impl Connection {
 
     /// Block the calling thread until the analysis reaches the *Finished*
     /// phase.  Delegates entirely to `asp_connection_wait_analysis` in libasp.
-    pub fn wait_analysis(
-        &mut self,
-        _workspace: &Workspace,
-        analysis: &Analysis,
-    ) -> AspResult<()> {
+    pub fn wait_analysis(&mut self, _workspace: &Workspace, analysis: &Analysis) -> AspResult<()> {
         unsafe {
             // The C function only needs the analysis handle, not the workspace.
             let c_an = build_c_analysis_id(analysis.id)?;

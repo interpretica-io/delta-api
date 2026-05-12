@@ -22,9 +22,9 @@
  * DEALINGS IN THE SOFTWARE.
  */
 
-use serde::{Deserialize, Serialize};
 use super::env::Environment;
 use super::file::File;
+use serde::{Deserialize, Serialize};
 
 /// Workspace (a named collection of files with an environment)
 #[derive(Serialize, Deserialize, PartialEq, Clone, Debug, Default)]
