@@ -227,6 +227,21 @@ unsafe fn build_c_address_local(path: &str) -> AspResult<*mut sys::asp_address> 
     }
 }
 
+/// Build a `*mut asp_address` for a compiler path.
+///
+/// The `spec` string must be in `"compiler_type:/path/to/binary"` format,
+/// e.g. `"clang:/usr/bin/clang"` or `"gcc:/usr/bin/gcc"`.
+/// This format is required by the server to resolve the main toolchain.
+unsafe fn build_c_address_compiler_path(spec: &str) -> AspResult<*mut sys::asp_address> {
+    let c_spec = CString::new(spec).map_err(|_| AspError::InvalidArgument)?;
+    let addr = sys::asp_address_compiler_path(c_spec.as_ptr());
+    if addr.is_null() {
+        Err(AspError::NoMemory)
+    } else {
+        Ok(addr)
+    }
+}
+
 /// Build a `*mut asp_address` for an IP endpoint.
 unsafe fn build_c_address_ip(host: &str, port: u16) -> AspResult<*mut sys::asp_address> {
     let c_host = CString::new(host).map_err(|_| AspError::InvalidArgument)?;
@@ -260,6 +275,9 @@ unsafe fn build_c_address(addr: &Address) -> AspResult<*mut sys::asp_address> {
                     build_c_address_ip(urn, addr.port.unwrap_or(0))
                 }
                 AddressType::Nng => build_c_address_nng(urn),
+                // Compiler paths use asp_address_compiler_path(); the `urn`
+                // must be in "compiler_type:/path" format, e.g. "clang:/usr/bin/clang".
+                AddressType::CompilerPath => build_c_address_compiler_path(urn),
                 _ => build_c_address_local(urn),
             }
         }
