@@ -1,0 +1,161 @@
+<?xml version="1.0" ?>
+<package version="1.0">
+    <description>Delta API server tests</description>
+
+    <!-- @page delta-server Server Tests
+          @objective Verify the Delta API network server over its
+                     newline-delimited JSON protocol.
+
+          @par Test Groups:
+          - @ref delta-server-ping - Liveness probe and empty pool listing
+          - @ref delta-server-node_lifecycle - Node registration lifecycle
+          - @ref delta-server-error_handling - Malformed request handling
+          - @ref delta-server-shared_state - Shared pool state and pipelining
+
+          @par Notes:
+          - Each test launches its own private delta-server instance bound
+            to an ephemeral loopback port.
+    -->
+
+    <author mailto="maxim.menshikov@interpretica.io" />
+
+    <session track_conf="silent">
+        <!-- @page delta-server-prologue Server Group Prologue
+              @objective Verify the delta-server binary can be launched.
+
+              @par Scenario:
+              -# Launch a delta-server instance.
+              -# Stop the delta-server instance.
+        -->
+        <prologue>
+            <script name="prologue">
+                <objective>
+                    Verify the delta-server binary can be launched.
+
+                    - Launches and stops a delta-server instance.
+
+                    @md
+                </objective>
+            </script>
+        </prologue>
+
+        <!-- @page delta-server-epilogue Server Group Epilogue
+              @objective Finalize the server test group.
+
+              @par Scenario:
+              -# No cleanup actions are required for this group.
+        -->
+        <epilogue>
+            <script name="epilogue">
+                <objective>
+                    Finalize the server test group.
+
+                    - Each test owns and stops its own server instance.
+
+                    @md
+                </objective>
+            </script>
+        </epilogue>
+
+        <!-- @page delta-server-ping Delta API ping test
+              @objective Check that a freshly launched Delta API server
+                         answers a liveness probe and reports an empty pool.
+
+              @par Scenario:
+              -# Launch the Delta API server.
+              -# Open a client connection.
+              -# Send a ping and expect a pong.
+              -# Measure ping round-trip latency and record it in a chart.
+              -# Verify a fresh node pool lists no nodes.
+
+              @par Expected Results:
+              - The server answers the liveness probe with a pong.
+              - A fresh node pool is empty.
+        -->
+        <run>
+            <script name="ping">
+                <objective>
+                    Verify the Delta API liveness probe and empty pool
+                    listing.
+
+                    @md
+                </objective>
+            </script>
+        </run>
+
+        <!-- @page delta-server-node_lifecycle Delta API node lifecycle test
+              @objective Check node registration, listing, status lookups
+                         and removal.
+
+              @par Scenario:
+              -# Launch the Delta API server and open a connection.
+              -# Register a node and verify a duplicate is rejected.
+              -# Register a second node and verify the sorted listing.
+              -# Verify the node status and liveness lookups.
+              -# Remove the node and verify a second removal is rejected.
+
+              @par Expected Results:
+              - Node registration, lookups and removal behave as specified.
+        -->
+        <run>
+            <script name="node_lifecycle">
+                <objective>
+                    Verify the Delta API node registration lifecycle.
+
+                    @md
+                </objective>
+            </script>
+        </run>
+
+        <!-- @page delta-server-error_handling Delta API error handling test
+              @objective Check that malformed requests and unknown nodes are
+                         reported as errors without dropping the connection.
+
+              @par Scenario:
+              -# Launch the Delta API server and open a connection.
+              -# Send malformed requests and expect error responses.
+              -# Verify the connection survives malformed requests.
+              -# Operate on unknown nodes and expect rejection.
+
+              @par Expected Results:
+              - Malformed requests yield error responses.
+              - The connection survives errors.
+              - Unknown nodes are rejected with the documented results.
+        -->
+        <run>
+            <script name="error_handling">
+                <objective>
+                    Verify the Delta API error paths and protocol
+                    robustness.
+
+                    @md
+                </objective>
+            </script>
+        </run>
+
+        <!-- @page delta-server-shared_state Delta API shared state test
+              @objective Check that the node pool is shared across
+                         connections and pipelined requests are ordered.
+
+              @par Scenario:
+              -# Launch the Delta API server.
+              -# Register a node on one connection.
+              -# Verify a second connection sees that node.
+              -# Pipeline three requests and verify ordered responses.
+
+              @par Expected Results:
+              - Pool state is shared across connections.
+              - Pipelined responses are returned in request order.
+        -->
+        <run>
+            <script name="shared_state">
+                <objective>
+                    Verify the Delta API shared pool state and request
+                    pipelining.
+
+                    @md
+                </objective>
+            </script>
+        </run>
+    </session>
+</package>

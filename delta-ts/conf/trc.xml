@@ -1,0 +1,73 @@
+<?xml version="1.0" encoding="UTF-8" ?>
+<trc_db unknown_exp_status="passed_ok">
+  <test name="delta-ts" type="package">
+    <objective>Delta API Test Suite</objective>
+    <notes />
+    <iter result="PASSED">
+      <notes />
+      <test name="prologue" type="script">
+        <objective>Test suite prologue</objective>
+        <notes />
+        <iter result="PASSED">
+          <notes />
+        </iter>
+      </test>
+      <test name="server" type="package">
+        <objective>Delta API server tests</objective>
+        <notes />
+        <iter result="PASSED">
+          <notes />
+          <test name="prologue" type="script">
+            <objective>Server group prologue</objective>
+            <notes />
+            <iter result="PASSED">
+              <notes />
+            </iter>
+          </test>
+          <test name="ping" type="script">
+            <objective>Delta API ping test</objective>
+            <notes />
+            <iter result="PASSED">
+              <notes />
+            </iter>
+          </test>
+          <test name="node_lifecycle" type="script">
+            <objective>Delta API node lifecycle test</objective>
+            <notes />
+            <iter result="PASSED">
+              <notes />
+            </iter>
+          </test>
+          <test name="error_handling" type="script">
+            <objective>Delta API error handling test</objective>
+            <notes />
+            <iter result="PASSED">
+              <notes />
+            </iter>
+          </test>
+          <test name="shared_state" type="script">
+            <objective>Delta API shared state test</objective>
+            <notes />
+            <iter result="PASSED">
+              <notes />
+            </iter>
+          </test>
+          <test name="epilogue" type="script">
+            <objective>Server group epilogue</objective>
+            <notes />
+            <iter result="PASSED">
+              <notes />
+            </iter>
+          </test>
+        </iter>
+      </test>
+      <test name="epilogue" type="script">
+        <objective>Test suite epilogue</objective>
+        <notes />
+        <iter result="PASSED">
+          <notes />
+        </iter>
+      </test>
+    </iter>
+  </test>
+</trc_db>

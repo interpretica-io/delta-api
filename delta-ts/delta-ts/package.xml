@@ -1,0 +1,63 @@
+<?xml version="1.0" ?>
+<package version="1.0">
+    <description>Delta API Test Suite</description>
+
+    <!-- @page delta-ts Delta API Test Suite
+          @objective Verify the Delta API network server built on top of the
+                     Test Environment framework.
+
+          @par Test Groups:
+          - @ref delta-server - Delta API server protocol tests
+    -->
+
+    <author mailto="maxim.menshikov@interpretica.io" />
+
+    <session track_conf="silent">
+        <!-- @page delta-ts-prologue Test Suite Prologue
+              @objective Prepare the test environment for all test groups.
+
+              @par Scenario:
+              -# No special setup is required for this test suite.
+        -->
+        <prologue>
+            <script name="prologue">
+                <objective>
+                    Prepare test environment.
+
+                    - No special setup is required for this test suite.
+
+                    @md
+                </objective>
+            </script>
+        </prologue>
+
+        <!-- @page delta-ts-epilogue Test Suite Epilogue
+              @objective Finalize test execution and clean up resources.
+
+              @par Scenario:
+              -# No cleanup actions are required.
+        -->
+        <epilogue>
+            <script name="epilogue">
+                <objective>
+                    Finalize test execution.
+
+                    - No cleanup actions are required for this test suite.
+
+                    @md
+                </objective>
+            </script>
+        </epilogue>
+
+        <!-- @page delta-server Server Tests
+              @objective Verify the Delta API server protocol end to end.
+              @see @ref delta-server-ping
+              @see @ref delta-server-node_lifecycle
+              @see @ref delta-server-error_handling
+              @see @ref delta-server-shared_state
+        -->
+        <run>
+            <package name="server" />
+        </run>
+    </session>
+</package>
