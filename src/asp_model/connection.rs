@@ -771,6 +771,57 @@ impl Connection {
 
     // ── Analysis operations ───────────────────────────────────────────────
 
+    /// Set per-workspace analysis options on the remote server.
+    ///
+    /// Each `(key, value)` pair is stored on the workspace and applied
+    /// to the next `start_analysis` call.  The known keys mirror
+    /// Visao's CLI flags — `sbom_output`, `sbom_root`, `sbom_format`,
+    /// `sbom_vuln_db`, `sbom_license_policy`, `sbom_diff_prev`,
+    /// `sbom_diff_output`, `chc_program`, `xproj`.  Unknown keys are
+    /// silently ignored on the server so this is forward-compatible.
+    pub fn set_analysis_options<I, K, V>(
+        &mut self,
+        workspace: &Workspace,
+        options: I,
+    ) -> AspResult<()>
+    where
+        I: IntoIterator<Item = (K, V)>,
+        K: AsRef<str>,
+        V: AsRef<str>,
+    {
+        // Build owned CString buffers so the C-side borrows can
+        // safely outlive the call without ever dangling.
+        let pairs: Vec<(std::ffi::CString, std::ffi::CString)> = options
+            .into_iter()
+            .filter_map(|(k, v)| {
+                let kc = std::ffi::CString::new(k.as_ref()).ok()?;
+                let vc = std::ffi::CString::new(v.as_ref()).ok()?;
+                Some((kc, vc))
+            })
+            .collect();
+        let c_array: Vec<sys::asp_analysis_option> = pairs
+            .iter()
+            .map(|(k, v)| sys::asp_analysis_option {
+                key: k.as_ptr(),
+                value: v.as_ptr(),
+            })
+            .collect();
+        unsafe {
+            let c_ws = build_c_workspace_id(workspace.id)?;
+            let rc = sys::asp_connection_set_analysis_options(
+                self.conn,
+                c_ws,
+                c_array.as_ptr(),
+                c_array.len(),
+            );
+            sys::asp_workspace_free(c_ws);
+            if rc != 0 {
+                return Err(asp_error(rc));
+            }
+            Ok(())
+        }
+    }
+
     /// Start an analysis on the given workspace.
     ///
     /// On success `analysis.id` is updated with the server-assigned ID.
