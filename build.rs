@@ -110,12 +110,22 @@ fn main() {
 
 fn asp_source(manifest_dir: &Path) -> (String, String) {
     let (meta_url, meta_ref) = read_asp_metadata(manifest_dir);
-    let url = env::var("ASP_GIT_URL").ok().or(meta_url).unwrap_or_else(|| {
-        panic!("[package.metadata.asp] git-url is missing from Cargo.toml (set it or ASP_GIT_URL)")
-    });
-    let git_ref = env::var("ASP_GIT_REF").ok().or(meta_ref).unwrap_or_else(|| {
-        panic!("[package.metadata.asp] git-ref is missing from Cargo.toml (set it or ASP_GIT_REF)")
-    });
+    let url = env::var("ASP_GIT_URL")
+        .ok()
+        .or(meta_url)
+        .unwrap_or_else(|| {
+            panic!(
+                "[package.metadata.asp] git-url is missing from Cargo.toml (set it or ASP_GIT_URL)"
+            )
+        });
+    let git_ref = env::var("ASP_GIT_REF")
+        .ok()
+        .or(meta_ref)
+        .unwrap_or_else(|| {
+            panic!(
+                "[package.metadata.asp] git-ref is missing from Cargo.toml (set it or ASP_GIT_REF)"
+            )
+        });
     (url, git_ref)
 }
 
