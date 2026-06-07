@@ -34,8 +34,6 @@ pub mod status;
 pub mod symbol;
 pub mod workspace;
 
-#[cfg(feature = "asp_client")]
 pub(crate) mod sys;
 
-#[cfg(feature = "asp_client")]
 pub mod connection;
