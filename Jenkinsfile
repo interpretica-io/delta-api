@@ -17,13 +17,28 @@ pipeline {
        toolchain rather than asp's Docker image, so no docker-in-docker is
        needed on the agent. */
     ASP_NATIVE_BUILD = '1'
+    /* asp is private, so we clone it here with the job's credentials (see the
+       Prerequisites stage) and hand it to build.rs instead of letting it clone
+       anonymously. */
+    ASP_SRC_DIR = "${WORKSPACE}/asp"
   }
 
   stages {
-    stage('Format') {
+    stage('Prerequisites') {
       steps {
         /* Mark the workspace safe — uid manipulations can make Git wary. */
         sh 'git config --global --add safe.directory "*"'
+        /* Clone the private asp with the same credentials the job uses to check
+           out this repo (reuse the token). */
+        dir('asp') {
+          git url: 'https://github.com/interpretica-io/asp.git',
+              branch: 'master',
+              credentialsId: scm.userRemoteConfigs[0].credentialsId
+        }
+      }
+    }
+    stage('Format') {
+      steps {
         sh 'cargo fmt -- --check'
       }
     }

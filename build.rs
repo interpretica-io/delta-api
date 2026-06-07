@@ -22,9 +22,11 @@
  * DEALINGS IN THE SOFTWARE.
  */
 
-//! Build script. The native libasp this crate links against is ALWAYS obtained
-//! by cloning the pinned asp source and building it — a local/sibling asp
-//! checkout is never used.
+//! Build script. The native libasp this crate links against is built from the
+//! pinned asp source: either an explicit checkout passed via `ASP_SRC_DIR` (e.g.
+//! CI that cloned the private repo with its own credentials), or — by default —
+//! a fresh clone of the pinned ref into a shared cache. Implicit sibling-directory
+//! discovery is never used.
 //!
 //! Where the build runs:
 //!   - Non-macOS targets (Linux, Windows): inside asp's own Docker image
@@ -61,6 +63,7 @@ fn main() {
     // The pinned asp URL/ref live in Cargo.toml metadata.
     println!("cargo:rerun-if-changed=Cargo.toml");
     for key in [
+        "ASP_SRC_DIR",
         "ASP_GIT_URL",
         "ASP_GIT_REF",
         "ASP_CACHE_DIR",
@@ -71,9 +74,9 @@ fn main() {
         println!("cargo:rerun-if-env-changed={key}");
     }
 
-    // ── Clone the pinned asp, build libasp for this target, locate it ──────
+    // ── Obtain the asp source, build libasp for this target, locate it ────
     let (asp_url, asp_ref) = asp_source(&manifest_dir);
-    let asp_dir = clone_asp(&asp_url, &asp_ref);
+    let asp_dir = obtain_asp(&asp_url, &asp_ref);
     let (build_subdir, run_make_flag) = target_build();
     let lib_dir = build_libasp(&asp_dir, &build_subdir, run_make_flag);
 
@@ -161,6 +164,39 @@ fn read_asp_metadata(manifest_dir: &Path) -> (Option<String>, Option<String>) {
             .map(str::to_string)
     };
     (field("git-url"), field("git-ref"))
+}
+
+// ─────────────────────────────────────────────────────────────────────────────
+// Obtain the asp source tree.
+// ─────────────────────────────────────────────────────────────────────────────
+
+/// Return the asp source directory. If `ASP_SRC_DIR` points at an asp checkout,
+/// use it as-is — this lets a caller that already cloned asp (e.g. CI reusing
+/// its own credentials for the private repo) hand it over instead of having this
+/// script clone anonymously. Otherwise clone the pinned ref into a shared cache.
+fn obtain_asp(url: &str, git_ref: &str) -> PathBuf {
+    if let Some(dir) = env::var_os("ASP_SRC_DIR") {
+        let p = PathBuf::from(&dir);
+        if is_asp_source(&p) {
+            println!(
+                "cargo:warning=using asp source from ASP_SRC_DIR={}",
+                p.display()
+            );
+            return p;
+        }
+        if !p.as_os_str().is_empty() {
+            eprintln!(
+                "[asp-build] ASP_SRC_DIR={} is not an asp checkout; falling back to clone",
+                p.display()
+            );
+        }
+    }
+    clone_asp(url, git_ref)
+}
+
+/// A directory looks like an asp checkout if it carries the public headers.
+fn is_asp_source(dir: &Path) -> bool {
+    dir.join("lib/include/public/asp/asp.h").exists()
 }
 
 // ─────────────────────────────────────────────────────────────────────────────
