@@ -85,9 +85,15 @@ pub enum Request {
     /// Forget a node, dropping any open connection to it.
     Remove { name: String },
     /// Deploy a subject onto a connected node.
-    Deploy { name: String, subject: DeploySubject },
+    Deploy {
+        name: String,
+        subject: DeploySubject,
+    },
     /// Start a deployed subject on a node.
-    Run { name: String, subject: DeploySubject },
+    Run {
+        name: String,
+        subject: DeploySubject,
+    },
     /// Report the connection status of a node.
     IsConnected { name: String },
     /// Probe whether a node's subject process is alive.
@@ -118,7 +124,9 @@ pub enum Response {
     /// Successful reply to [`Request::Ping`].
     Pong,
     /// The request line could not be parsed or executed.
-    Error { message: String },
+    Error {
+        message: String,
+    },
 }
 
 /// Apply one request against the shared pool and produce a response.
