@@ -30,13 +30,17 @@
 //!   - Non-macOS targets (Linux, Windows): inside asp's own Docker image
 //!     (`tools/build-env/Dockerfile_ubuntu_2404`), which carries asp's full
 //!     toolchain, via its `run_make.sh`. The host needs no asp build tools.
-//!   - macOS target: with the host cmake directly. A mac host already builds
-//!     the mac dylib natively, and asp's Linux image cannot (it lacks osxcross
-//!     + the macOS SDK), so Docker there would be both broken and pointless.
+//!   - macOS target: asp's `run_make.sh` on the host directly. A mac host
+//!     already builds the mac dylib natively, and asp's Linux image cannot (it
+//!     lacks osxcross + the macOS SDK), so Docker there would be both broken
+//!     and pointless.
+//!
+//! Both paths run the same `run_make.sh`, which installs a self-contained
+//! libasp (nng linked statically) into `<build>/fs/lib`.
 //!
 //! Overrides: `ASP_FORCE_DOCKER=1` forces the Docker path even on macOS (use an
 //! image that carries a working macOS SDK via `ASP_DOCKER_IMAGE`).
-//! `ASP_NATIVE_BUILD=1` forces the host cmake path everywhere (no Docker).
+//! `ASP_NATIVE_BUILD=1` forces the host build path everywhere (no Docker).
 
 use std::env;
 use std::fs;
@@ -83,6 +87,10 @@ fn main() {
     // ── Tell Cargo where to find and link libasp ──────────────────────────
     println!("cargo:rustc-link-search=native={}", lib_dir.display());
     println!("cargo:rustc-link-lib=dylib=asp");
+    // Bake the library dir as an rpath so this crate's OWN artifacts (its tests,
+    // benches and the delta-server bin) can load libasp at runtime. This does
+    // not propagate to downstream crates — they use DEP_ASP_LIB_DIR below.
+    println!("cargo:rustc-link-arg=-Wl,-rpath,{}", lib_dir.display());
 
     // Publish the library directory as DEP_ASP_LIB_DIR so that downstream
     // build scripts (e.g. delta-cli/build.rs) can add the rpath to the final
@@ -231,8 +239,13 @@ fn target_build() -> (String, Option<&'static str>) {
 }
 
 /// Build libasp if it is not already present, and return its directory.
+///
+/// We use asp's `run_make.sh`, which `ninja install`s into `<build>/fs`, so the
+/// self-contained library (asp links nng statically, install rpath `$ORIGIN`/
+/// `@loader_path`) lives in `<build>/fs/lib` — not the build tree's `<build>/lib`,
+/// whose libasp references a non-co-located libnng and fails to load at runtime.
 fn build_libasp(asp_dir: &Path, build_subdir: &str, run_make_flag: Option<&str>) -> PathBuf {
-    let lib_dir = asp_dir.join(build_subdir).join("lib");
+    let lib_dir = asp_dir.join(build_subdir).join("fs").join("lib");
     let _lock = FileLock::acquire(&cache_root().join(".asp-build.lock"));
     if has_libasp(&lib_dir) {
         return lib_dir;
@@ -240,13 +253,13 @@ fn build_libasp(asp_dir: &Path, build_subdir: &str, run_make_flag: Option<&str>)
 
     // macOS builds natively on the host (the asp Linux image can't target mac);
     // everything else builds in asp's Docker image. ASP_NATIVE_BUILD forces the
-    // host cmake everywhere; ASP_FORCE_DOCKER forces Docker even on macOS.
+    // host build everywhere; ASP_FORCE_DOCKER forces Docker even on macOS.
     let is_macos = env::var("CARGO_CFG_TARGET_OS").as_deref() == Ok("macos");
     let force_native = env::var_os("ASP_NATIVE_BUILD").is_some();
     let force_docker = env::var_os("ASP_FORCE_DOCKER").is_some();
 
     if force_native || (is_macos && !force_docker) {
-        build_native(asp_dir, build_subdir);
+        build_native(asp_dir, run_make_flag);
     } else {
         build_in_docker(asp_dir, run_make_flag);
     }
@@ -289,7 +302,7 @@ fn build_in_docker(asp_dir: &Path, run_make_flag: Option<&str>) {
     if !run("docker", &args) {
         panic!(
             "building libasp in Docker failed. Ensure Docker is running, or set \
-             ASP_NATIVE_BUILD=1 to build with the host cmake instead."
+             ASP_NATIVE_BUILD=1 to build on the host instead."
         );
     }
 }
@@ -322,34 +335,20 @@ fn ensure_image(asp_dir: &Path) -> String {
     image
 }
 
-/// Fallback: build libasp with the host cmake (no Docker), into `build_subdir`.
-fn build_native(asp_dir: &Path, build_subdir: &str) {
-    let asp_str = asp_dir.to_str().expect("non-UTF8 cache path");
-    let build = asp_dir.join(build_subdir);
-    let build_str = build.to_str().expect("non-UTF8 cache path");
-    println!("cargo:warning=building libasp with host cmake");
-
-    if !run(
-        "cmake",
-        &[
-            "-S",
-            asp_str,
-            "-B",
-            build_str,
-            "-DCMAKE_BUILD_TYPE=Release",
-            "-DBUILD_SHARED_LIBS=ON",
-            "-DBUILD_CLI=OFF",
-        ],
-    ) {
-        panic!("cmake configure of asp failed — is cmake installed?");
+/// Build libasp with asp's own `run_make.sh` directly on the host (no Docker) —
+/// same canonical build as the Docker path, just without the container. Produces
+/// the self-contained install tree under `<build>/fs`.
+fn build_native(asp_dir: &Path, run_make_flag: Option<&str>) {
+    println!(
+        "cargo:warning=building libasp on the host ({})",
+        run_make_flag.unwrap_or("native")
+    );
+    let mut args: Vec<&str> = Vec::new();
+    if let Some(flag) = run_make_flag {
+        args.push(flag);
     }
-    if !run(
-        "cmake",
-        &[
-            "--build", build_str, "--config", "Release", "--target", "asp",
-        ],
-    ) {
-        panic!("cmake build of libasp failed");
+    if !run_in(asp_dir, "./tools/run_make.sh", &args) {
+        panic!("asp run_make.sh failed — ensure cmake, ninja and a C/C++ compiler are installed.");
     }
 }
 
@@ -381,6 +380,22 @@ fn cache_root() -> PathBuf {
 fn run(cmd: &str, args: &[&str]) -> bool {
     eprintln!("[asp-build] {cmd} {}", args.join(" "));
     match Command::new(cmd).args(args).status() {
+        Ok(status) => status.success(),
+        Err(e) => {
+            eprintln!("[asp-build] failed to spawn `{cmd}`: {e}");
+            false
+        }
+    }
+}
+
+/// Like `run`, but with an explicit working directory.
+fn run_in(dir: &Path, cmd: &str, args: &[&str]) -> bool {
+    eprintln!(
+        "[asp-build] (cd {}) {cmd} {}",
+        dir.display(),
+        args.join(" ")
+    );
+    match Command::new(cmd).current_dir(dir).args(args).status() {
         Ok(status) => status.success(),
         Err(e) => {
             eprintln!("[asp-build] failed to spawn `{cmd}`: {e}");
