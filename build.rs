@@ -22,10 +22,21 @@
  * DEALINGS IN THE SOFTWARE.
  */
 
-//! Build script: the native libasp the asp client links against is ALWAYS
-//! obtained by cloning the pinned asp source and building it. A local/sibling
-//! asp checkout is intentionally never used — builds are reproducible and do
-//! not depend on whatever happens to sit next to the crate on disk.
+//! Build script. The native libasp this crate links against is ALWAYS obtained
+//! by cloning the pinned asp source and building it — a local/sibling asp
+//! checkout is never used.
+//!
+//! Where the build runs:
+//!   - Non-macOS targets (Linux, Windows): inside asp's own Docker image
+//!     (`tools/build-env/Dockerfile_ubuntu_2404`), which carries asp's full
+//!     toolchain, via its `run_make.sh`. The host needs no asp build tools.
+//!   - macOS target: with the host cmake directly. A mac host already builds
+//!     the mac dylib natively, and asp's Linux image cannot (it lacks osxcross
+//!     + the macOS SDK), so Docker there would be both broken and pointless.
+//!
+//! Overrides: `ASP_FORCE_DOCKER=1` forces the Docker path even on macOS (use an
+//! image that carries a working macOS SDK via `ASP_DOCKER_IMAGE`).
+//! `ASP_NATIVE_BUILD=1` forces the host cmake path everywhere (no Docker).
 
 use std::env;
 use std::fs;
@@ -41,20 +52,30 @@ use std::time::Duration;
 const ASP_GIT_URL_DEFAULT: &str = "https://github.com/interpretica-io/asp";
 const ASP_GIT_REF_DEFAULT: &str = "v1.10.0";
 
-/// Build directory name used inside the cloned tree.
-const AUTOFETCH_BUILD_DIR: &str = "build-autofetch";
+/// asp's own build image and the Dockerfile that produces it (relative to the
+/// asp source root). Override the image name/tag with `ASP_DOCKER_IMAGE`.
+const ASP_DOCKER_IMAGE_DEFAULT: &str = "asp:ubuntu_2404";
+const ASP_DOCKERFILE: &str = "tools/build-env/Dockerfile_ubuntu_2404";
 
 fn main() {
     // ── Rebuild triggers ──────────────────────────────────────────────────
     println!("cargo:rerun-if-changed=build.rs");
-    for key in ["ASP_GIT_URL", "ASP_GIT_REF", "ASP_CACHE_DIR"] {
+    for key in [
+        "ASP_GIT_URL",
+        "ASP_GIT_REF",
+        "ASP_CACHE_DIR",
+        "ASP_DOCKER_IMAGE",
+        "ASP_NATIVE_BUILD",
+        "ASP_FORCE_DOCKER",
+    ] {
         println!("cargo:rerun-if-env-changed={key}");
     }
 
-    // ── Always clone + build the pinned asp; locate its lib + headers ──────
-    let asp_dir = clone_and_build_asp();
-    let lib_dir = locate_lib(&asp_dir)
-        .unwrap_or_else(|| panic!("no libasp produced under {}", asp_dir.display()));
+    // ── Clone the pinned asp, build libasp for this target, locate it ──────
+    let asp_dir = clone_asp();
+    let (build_subdir, run_make_flag) = target_build();
+    let lib_dir = build_libasp(&asp_dir, &build_subdir, run_make_flag);
+
     let include_dir = asp_dir.join("lib/include/public");
     assert!(
         has_asp_header(&include_dir),
@@ -85,28 +106,36 @@ fn main() {
 }
 
 // ─────────────────────────────────────────────────────────────────────────────
-// Clone the pinned asp and build libasp into a shared cache.
+// Clone the pinned asp into a shared cache.
 // ─────────────────────────────────────────────────────────────────────────────
 
-fn clone_and_build_asp() -> PathBuf {
+fn clone_asp() -> PathBuf {
     let url = env::var("ASP_GIT_URL").unwrap_or_else(|_| ASP_GIT_URL_DEFAULT.to_string());
     let git_ref = env::var("ASP_GIT_REF").unwrap_or_else(|_| ASP_GIT_REF_DEFAULT.to_string());
 
     let cache_root = cache_root();
-    fs::create_dir_all(&cache_root)
-        .unwrap_or_else(|e| panic!("could not create asp cache dir {}: {e}", cache_root.display()));
+    fs::create_dir_all(&cache_root).unwrap_or_else(|e| {
+        panic!(
+            "could not create asp cache dir {}: {e}",
+            cache_root.display()
+        )
+    });
 
-    // Serialize concurrent builds (multiple crates sharing one cache) with a
-    // best-effort lock so they do not clone/build into the same tree at once.
-    let _lock = FileLock::acquire(&cache_root.join(".asp-autofetch.lock"));
+    // Serialize concurrent builds (multiple crates sharing one cache).
+    let _lock = FileLock::acquire(&cache_root.join(".asp-build.lock"));
 
     let safe_ref: String = git_ref
         .chars()
-        .map(|c| if c.is_alphanumeric() || matches!(c, '.' | '-' | '_') { c } else { '_' })
+        .map(|c| {
+            if c.is_alphanumeric() || matches!(c, '.' | '-' | '_') {
+                c
+            } else {
+                '_'
+            }
+        })
         .collect();
     let src = cache_root.join(format!("asp-{safe_ref}"));
 
-    // Clone if the tree is not present yet.
     if !src.join(".git").is_dir() {
         let _ = fs::remove_dir_all(&src);
         println!("cargo:warning=cloning asp {git_ref} from {url}");
@@ -115,13 +144,17 @@ fn clone_and_build_asp() -> PathBuf {
         // Fast path: shallow clone of a tag/branch.
         let shallow = run(
             "git",
-            &["clone", "--quiet", "--depth", "1", "--branch", &git_ref, &url, src_str],
+            &[
+                "clone", "--quiet", "--depth", "1", "--branch", &git_ref, &url, src_str,
+            ],
         );
         if !shallow {
             // Fallback: full clone + checkout (handles raw commit SHAs).
             let _ = fs::remove_dir_all(&src);
             if !run("git", &["clone", "--quiet", &url, src_str]) {
-                panic!("git clone of asp ({url}) failed — is git installed and the network reachable?");
+                panic!(
+                    "git clone of asp ({url}) failed — is git installed and the network reachable?"
+                );
             }
             if !run("git", &["-C", src_str, "checkout", "--quiet", &git_ref]) {
                 panic!("git checkout of asp ref '{git_ref}' failed");
@@ -129,44 +162,148 @@ fn clone_and_build_asp() -> PathBuf {
         }
     }
 
-    // Build libasp (skip if a previous run already produced it).
-    if locate_lib(&src).is_none() {
-        let src_str = src.to_str().expect("non-UTF8 cache path");
-        let build = src.join(AUTOFETCH_BUILD_DIR);
-        let build_str = build.to_str().expect("non-UTF8 cache path");
-        println!("cargo:warning=building libasp {git_ref} (first run; this can take a minute)");
-
-        if !run(
-            "cmake",
-            &[
-                "-S", src_str,
-                "-B", build_str,
-                "-DCMAKE_BUILD_TYPE=Release",
-                "-DBUILD_SHARED_LIBS=ON",
-                "-DBUILD_CLI=OFF",
-            ],
-        ) {
-            panic!("cmake configure of asp failed — is cmake installed?");
-        }
-        if !run(
-            "cmake",
-            &["--build", build_str, "--config", "Release", "--target", "asp"],
-        ) {
-            panic!("cmake build of libasp failed");
-        }
-    }
-
     src
 }
 
-/// Directory inside the cloned tree that holds the built libasp.
-fn locate_lib(asp_dir: &Path) -> Option<PathBuf> {
-    [
-        asp_dir.join(AUTOFETCH_BUILD_DIR).join("lib"),
-        asp_dir.join(AUTOFETCH_BUILD_DIR),
-    ]
-    .into_iter()
-    .find(|c| has_libasp(c))
+// ─────────────────────────────────────────────────────────────────────────────
+// Build libasp for the requested target (in asp's Docker image by default).
+// ─────────────────────────────────────────────────────────────────────────────
+
+/// Map the Cargo target to (asp build sub-directory, `run_make.sh` flag).
+/// The sub-directory names match what `tools/run_make.sh` produces.
+fn target_build() -> (String, Option<&'static str>) {
+    let os = env::var("CARGO_CFG_TARGET_OS").unwrap_or_default();
+    let arch = env::var("CARGO_CFG_TARGET_ARCH").unwrap_or_default();
+    match (os.as_str(), arch.as_str()) {
+        ("macos", "aarch64") => ("build-mac-arm64".to_string(), Some("--mac-arm64")),
+        ("macos", _) => ("build-mac-x86_64".to_string(), Some("--mac-x86_64")),
+        ("windows", _) => ("build-win32".to_string(), Some("--win32")),
+        // Native (glibc) build for Linux and anything else.
+        _ => ("build".to_string(), None),
+    }
+}
+
+/// Build libasp if it is not already present, and return its directory.
+fn build_libasp(asp_dir: &Path, build_subdir: &str, run_make_flag: Option<&str>) -> PathBuf {
+    let lib_dir = asp_dir.join(build_subdir).join("lib");
+    let _lock = FileLock::acquire(&cache_root().join(".asp-build.lock"));
+    if has_libasp(&lib_dir) {
+        return lib_dir;
+    }
+
+    // macOS builds natively on the host (the asp Linux image can't target mac);
+    // everything else builds in asp's Docker image. ASP_NATIVE_BUILD forces the
+    // host cmake everywhere; ASP_FORCE_DOCKER forces Docker even on macOS.
+    let is_macos = env::var("CARGO_CFG_TARGET_OS").as_deref() == Ok("macos");
+    let force_native = env::var_os("ASP_NATIVE_BUILD").is_some();
+    let force_docker = env::var_os("ASP_FORCE_DOCKER").is_some();
+
+    if force_native || (is_macos && !force_docker) {
+        build_native(asp_dir, build_subdir);
+    } else {
+        build_in_docker(asp_dir, run_make_flag);
+    }
+
+    assert!(
+        has_libasp(&lib_dir),
+        "libasp was not produced in {}",
+        lib_dir.display()
+    );
+    lib_dir
+}
+
+/// Build libasp inside asp's own Docker image via its `run_make.sh`.
+fn build_in_docker(asp_dir: &Path, run_make_flag: Option<&str>) {
+    let image = ensure_image(asp_dir);
+    let asp_str = asp_dir.to_str().expect("non-UTF8 cache path");
+
+    println!(
+        "cargo:warning=building libasp in Docker image {image} ({})",
+        run_make_flag.unwrap_or("native linux")
+    );
+
+    // Mount the cloned tree at /src and run asp's own build there. Artifacts
+    // land back in the mounted tree (build*/lib/libasp.*).
+    let mount = format!("{asp_str}:/src");
+    let mut args: Vec<&str> = vec![
+        "run",
+        "--rm",
+        "-v",
+        &mount,
+        "-w",
+        "/src",
+        &image,
+        "./tools/run_make.sh",
+    ];
+    if let Some(flag) = run_make_flag {
+        args.push(flag);
+    }
+
+    if !run("docker", &args) {
+        panic!(
+            "building libasp in Docker failed. Ensure Docker is running, or set \
+             ASP_NATIVE_BUILD=1 to build with the host cmake instead."
+        );
+    }
+}
+
+/// Ensure asp's build image exists; build it from asp's Dockerfile if it is the
+/// default image and missing. A user-specified ASP_DOCKER_IMAGE must pre-exist.
+fn ensure_image(asp_dir: &Path) -> String {
+    let user_set = env::var("ASP_DOCKER_IMAGE").ok();
+    let image = user_set
+        .clone()
+        .unwrap_or_else(|| ASP_DOCKER_IMAGE_DEFAULT.to_string());
+
+    if run("docker", &["image", "inspect", &image]) {
+        return image;
+    }
+    if user_set.is_some() {
+        panic!("Docker image '{image}' (ASP_DOCKER_IMAGE) not found");
+    }
+
+    println!("cargo:warning=building asp Docker image {image} (first run; this is slow)");
+    let asp_str = asp_dir.to_str().expect("non-UTF8 cache path");
+    let dockerfile = asp_dir.join(ASP_DOCKERFILE);
+    let dockerfile_str = dockerfile.to_str().expect("non-UTF8 path");
+    if !run(
+        "docker",
+        &["build", "-t", &image, "-f", dockerfile_str, asp_str],
+    ) {
+        panic!("docker build of asp image failed");
+    }
+    image
+}
+
+/// Fallback: build libasp with the host cmake (no Docker), into `build_subdir`.
+fn build_native(asp_dir: &Path, build_subdir: &str) {
+    let asp_str = asp_dir.to_str().expect("non-UTF8 cache path");
+    let build = asp_dir.join(build_subdir);
+    let build_str = build.to_str().expect("non-UTF8 cache path");
+    println!("cargo:warning=building libasp with host cmake");
+
+    if !run(
+        "cmake",
+        &[
+            "-S",
+            asp_str,
+            "-B",
+            build_str,
+            "-DCMAKE_BUILD_TYPE=Release",
+            "-DBUILD_SHARED_LIBS=ON",
+            "-DBUILD_CLI=OFF",
+        ],
+    ) {
+        panic!("cmake configure of asp failed — is cmake installed?");
+    }
+    if !run(
+        "cmake",
+        &[
+            "--build", build_str, "--config", "Release", "--target", "asp",
+        ],
+    ) {
+        panic!("cmake build of libasp failed");
+    }
 }
 
 fn has_libasp(dir: &Path) -> bool {
@@ -195,11 +332,11 @@ fn cache_root() -> PathBuf {
 
 /// Run a command, streaming its output, and report whether it succeeded.
 fn run(cmd: &str, args: &[&str]) -> bool {
-    eprintln!("[asp-fetch] {cmd} {}", args.join(" "));
+    eprintln!("[asp-build] {cmd} {}", args.join(" "));
     match Command::new(cmd).args(args).status() {
         Ok(status) => status.success(),
         Err(e) => {
-            eprintln!("[asp-fetch] failed to spawn `{cmd}`: {e}");
+            eprintln!("[asp-build] failed to spawn `{cmd}`: {e}");
             false
         }
     }
@@ -211,9 +348,13 @@ struct FileLock(PathBuf);
 impl FileLock {
     fn acquire(path: &Path) -> FileLock {
         use std::io::ErrorKind;
-        // Up to ~5 minutes, then assume the lock is stale and proceed.
-        for _ in 0..600 {
-            match fs::OpenOptions::new().write(true).create_new(true).open(path) {
+        // Up to ~10 minutes, then assume the lock is stale and proceed.
+        for _ in 0..1200 {
+            match fs::OpenOptions::new()
+                .write(true)
+                .create_new(true)
+                .open(path)
+            {
                 Ok(_) => return FileLock(path.to_path_buf()),
                 Err(e) if e.kind() == ErrorKind::AlreadyExists => {
                     std::thread::sleep(Duration::from_millis(500));
