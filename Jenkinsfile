@@ -5,6 +5,10 @@ pipeline {
     dockerfile {
       filename 'Dockerfile'
       dir 'tools/build-env'
+      /* Run as root: Jenkins otherwise launches the container under a uid with
+         no /etc/passwd entry, so HOME resolves to "/" and `git config --global`
+         fails to write //.gitconfig. As root, HOME is /root and writable. */
+      args '-u 0:0'
     }
   }
 
@@ -34,6 +38,14 @@ pipeline {
       steps {
         sh 'cargo test --all-features'
       }
+    }
+  }
+
+  post {
+    /* We build as root, so target/ ends up root-owned — relax it so the next
+       run's checkout (under the Jenkins uid) can clean the workspace. */
+    always {
+      sh 'chmod -R 777 target || true'
     }
   }
 }
