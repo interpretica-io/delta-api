@@ -22,37 +22,55 @@
  * DEALINGS IN THE SOFTWARE.
  */
 
+//! Build script: the native libasp the asp client links against is ALWAYS
+//! obtained by cloning the pinned asp source and building it. A local/sibling
+//! asp checkout is intentionally never used — builds are reproducible and do
+//! not depend on whatever happens to sit next to the crate on disk.
+
 use std::env;
+use std::fs;
 use std::path::{Path, PathBuf};
+use std::process::Command;
+use std::time::Duration;
+
+/// Upstream asp repository. Overridable with `ASP_GIT_URL` / `ASP_GIT_REF`.
+/// The ref is pinned to a release tag for reproducible builds; bump it together
+/// with the FFI surface this crate consumes (bindings are regenerated from the
+/// fetched headers, so a wrong ref surfaces as a compile error here, never a
+/// silent ABI mismatch).
+const ASP_GIT_URL_DEFAULT: &str = "https://github.com/interpretica-io/asp";
+const ASP_GIT_REF_DEFAULT: &str = "v1.10.0";
+
+/// Build directory name used inside the cloned tree.
+const AUTOFETCH_BUILD_DIR: &str = "build-autofetch";
 
 fn main() {
-    // Only do work when the asp_client feature is requested.
-    if env::var("CARGO_FEATURE_ASP_CLIENT").is_err() {
-        return;
+    // ── Rebuild triggers ──────────────────────────────────────────────────
+    println!("cargo:rerun-if-changed=build.rs");
+    for key in ["ASP_GIT_URL", "ASP_GIT_REF", "ASP_CACHE_DIR"] {
+        println!("cargo:rerun-if-env-changed={key}");
     }
 
-    let manifest_dir = PathBuf::from(env::var("CARGO_MANIFEST_DIR").unwrap());
-
-    // ── Locate libasp library directory ──────────────────────────────────
-    let lib_dir = find_lib_dir(&manifest_dir);
-
-    // ── Locate libasp public headers directory ────────────────────────────
-    let include_dir = find_include_dir(&manifest_dir);
+    // ── Always clone + build the pinned asp; locate its lib + headers ──────
+    let asp_dir = clone_and_build_asp();
+    let lib_dir = locate_lib(&asp_dir)
+        .unwrap_or_else(|| panic!("no libasp produced under {}", asp_dir.display()));
+    let include_dir = asp_dir.join("lib/include/public");
+    assert!(
+        has_asp_header(&include_dir),
+        "public headers missing under {}",
+        include_dir.display()
+    );
 
     // ── Tell Cargo where to find and link libasp ──────────────────────────
     println!("cargo:rustc-link-search=native={}", lib_dir.display());
     println!("cargo:rustc-link-lib=dylib=asp");
 
     // Publish the library directory as DEP_ASP_LIB_DIR so that downstream
-    // build scripts (e.g. delta-cli/build.rs) can add the rpath to the
-    // final binary without duplicating the search logic.
+    // build scripts (e.g. delta-cli/build.rs) can add the rpath to the final
+    // binary without duplicating the search logic.
     println!("cargo:lib_dir={}", lib_dir.display());
 
-    // ── Rebuild triggers ──────────────────────────────────────────────────
-    println!("cargo:rerun-if-changed=build.rs");
-    println!("cargo:rerun-if-env-changed=LIBASP_BUILD_DIR");
-    println!("cargo:rerun-if-env-changed=ASP_SRC_DIR");
-    println!("cargo:rerun-if-env-changed=LIBASP_INCLUDE_DIR");
     println!(
         "cargo:rerun-if-changed={}",
         include_dir.join("asp/asp.h").display()
@@ -67,68 +85,88 @@ fn main() {
 }
 
 // ─────────────────────────────────────────────────────────────────────────────
-// Library directory discovery
+// Clone the pinned asp and build libasp into a shared cache.
 // ─────────────────────────────────────────────────────────────────────────────
 
-fn find_lib_dir(manifest_dir: &Path) -> PathBuf {
-    // 1. Explicit override: directory that already contains libasp.{dylib,so}
-    if let Ok(dir) = env::var("LIBASP_BUILD_DIR") {
-        let p = PathBuf::from(&dir);
-        if has_libasp(&p) {
-            return p;
-        }
-        let lib = p.join("lib");
-        if has_libasp(&lib) {
-            return lib;
-        }
-    }
+fn clone_and_build_asp() -> PathBuf {
+    let url = env::var("ASP_GIT_URL").unwrap_or_else(|_| ASP_GIT_URL_DEFAULT.to_string());
+    let git_ref = env::var("ASP_GIT_REF").unwrap_or_else(|_| ASP_GIT_REF_DEFAULT.to_string());
 
-    // 2. Locate the asp source tree, then search its build sub-directories.
-    if let Some(asp_dir) = find_asp_src(manifest_dir) {
-        let build_candidates = [
-            "build-mac-arm64/lib",
-            "build-macos-arm64/lib",
-            "build-macos-x86/lib",
-            "build-linux-arm64/lib",
-            "build-linux-x86_64/lib",
-            "build-win32/lib",
-            "build/lib",
-            "build_test/lib",
-            // Flat build directories (some generators put the library here)
-            "build-mac-arm64",
-            "build-macos-arm64",
-            "build-macos-x86",
-            "build-linux-arm64",
-            "build-linux-x86_64",
-            "build-win32",
-            "build",
-            "build_test",
-        ];
-        for rel in &build_candidates {
-            let candidate = asp_dir.join(rel);
-            if has_libasp(&candidate) {
-                return candidate;
+    let cache_root = cache_root();
+    fs::create_dir_all(&cache_root)
+        .unwrap_or_else(|e| panic!("could not create asp cache dir {}: {e}", cache_root.display()));
+
+    // Serialize concurrent builds (multiple crates sharing one cache) with a
+    // best-effort lock so they do not clone/build into the same tree at once.
+    let _lock = FileLock::acquire(&cache_root.join(".asp-autofetch.lock"));
+
+    let safe_ref: String = git_ref
+        .chars()
+        .map(|c| if c.is_alphanumeric() || matches!(c, '.' | '-' | '_') { c } else { '_' })
+        .collect();
+    let src = cache_root.join(format!("asp-{safe_ref}"));
+
+    // Clone if the tree is not present yet.
+    if !src.join(".git").is_dir() {
+        let _ = fs::remove_dir_all(&src);
+        println!("cargo:warning=cloning asp {git_ref} from {url}");
+        let src_str = src.to_str().expect("non-UTF8 cache path");
+
+        // Fast path: shallow clone of a tag/branch.
+        let shallow = run(
+            "git",
+            &["clone", "--quiet", "--depth", "1", "--branch", &git_ref, &url, src_str],
+        );
+        if !shallow {
+            // Fallback: full clone + checkout (handles raw commit SHAs).
+            let _ = fs::remove_dir_all(&src);
+            if !run("git", &["clone", "--quiet", &url, src_str]) {
+                panic!("git clone of asp ({url}) failed — is git installed and the network reachable?");
+            }
+            if !run("git", &["-C", src_str, "checkout", "--quiet", &git_ref]) {
+                panic!("git checkout of asp ref '{git_ref}' failed");
             }
         }
     }
 
-    panic!(
-        "\n\
-        ┌─────────────────────────────────────────────────────────────────────┐\n\
-        │  Could not find libasp.{{dylib|so|dll}} anywhere.                   │\n\
-        │                                                                     │\n\
-        │  Option A – point directly to the built library directory:          │\n\
-        │    export LIBASP_BUILD_DIR=/path/to/asp/build-mac-arm64/lib         │\n\
-        │                                                                     │\n\
-        │  Option B – build libasp first, then re-run cargo:                  │\n\
-        │    cd /path/to/asp                                                  │\n\
-        │    cmake -B build-mac-arm64 -G Ninja                               │\n\
-        │    cmake --build build-mac-arm64                                   │\n\
-        │                                                                     │\n\
-        │  Option C – set ASP_SRC_DIR if asp lives outside the default paths: │\n\
-        │    export ASP_SRC_DIR=/path/to/asp                                  │\n\
-        └─────────────────────────────────────────────────────────────────────┘"
-    );
+    // Build libasp (skip if a previous run already produced it).
+    if locate_lib(&src).is_none() {
+        let src_str = src.to_str().expect("non-UTF8 cache path");
+        let build = src.join(AUTOFETCH_BUILD_DIR);
+        let build_str = build.to_str().expect("non-UTF8 cache path");
+        println!("cargo:warning=building libasp {git_ref} (first run; this can take a minute)");
+
+        if !run(
+            "cmake",
+            &[
+                "-S", src_str,
+                "-B", build_str,
+                "-DCMAKE_BUILD_TYPE=Release",
+                "-DBUILD_SHARED_LIBS=ON",
+                "-DBUILD_CLI=OFF",
+            ],
+        ) {
+            panic!("cmake configure of asp failed — is cmake installed?");
+        }
+        if !run(
+            "cmake",
+            &["--build", build_str, "--config", "Release", "--target", "asp"],
+        ) {
+            panic!("cmake build of libasp failed");
+        }
+    }
+
+    src
+}
+
+/// Directory inside the cloned tree that holds the built libasp.
+fn locate_lib(asp_dir: &Path) -> Option<PathBuf> {
+    [
+        asp_dir.join(AUTOFETCH_BUILD_DIR).join("lib"),
+        asp_dir.join(AUTOFETCH_BUILD_DIR),
+    ]
+    .into_iter()
+    .find(|c| has_libasp(c))
 }
 
 fn has_libasp(dir: &Path) -> bool {
@@ -138,81 +176,59 @@ fn has_libasp(dir: &Path) -> bool {
         || dir.join("libasp.dll").exists()
 }
 
-// ─────────────────────────────────────────────────────────────────────────────
-// Public-header directory discovery
-// ─────────────────────────────────────────────────────────────────────────────
-
-fn find_include_dir(manifest_dir: &Path) -> PathBuf {
-    // 1. Explicit override
-    if let Ok(dir) = env::var("LIBASP_INCLUDE_DIR") {
-        let p = PathBuf::from(dir);
-        if has_asp_header(&p) {
-            return p;
-        }
-    }
-
-    // 2. Derive from asp source tree
-    if let Some(asp_dir) = find_asp_src(manifest_dir) {
-        let inc = asp_dir.join("lib/include/public");
-        if has_asp_header(&inc) {
-            return inc;
-        }
-    }
-
-    panic!(
-        "\n\
-        Could not find libasp public headers (asp/asp.h).\n\
-        Set LIBASP_INCLUDE_DIR to the directory that contains the asp/ folder,\n\
-        or set ASP_SRC_DIR to the root of the asp source tree."
-    );
-}
-
 fn has_asp_header(dir: &Path) -> bool {
     dir.join("asp/asp.h").exists()
 }
 
-// ─────────────────────────────────────────────────────────────────────────────
-// asp source tree discovery
-// ─────────────────────────────────────────────────────────────────────────────
+/// Root directory under which fetched asp trees are cached. Defaults to a
+/// subfolder of CARGO_HOME so the build is done once and shared across crates;
+/// overridable with ASP_CACHE_DIR.
+fn cache_root() -> PathBuf {
+    if let Some(dir) = env::var_os("ASP_CACHE_DIR") {
+        return PathBuf::from(dir);
+    }
+    if let Some(home) = env::var_os("CARGO_HOME") {
+        return PathBuf::from(home).join("asp-cache");
+    }
+    PathBuf::from(env::var("OUT_DIR").unwrap()).join("asp-cache")
+}
 
-/// Try to locate the root of the asp source tree, trying several well-known
-/// relative paths from the delta-api crate manifest directory.
-fn find_asp_src(manifest_dir: &Path) -> Option<PathBuf> {
-    // 1. Explicit environment variable
-    if let Ok(dir) = env::var("ASP_SRC_DIR") {
-        let p = PathBuf::from(dir);
-        if p.is_dir() {
-            return Some(p);
+/// Run a command, streaming its output, and report whether it succeeded.
+fn run(cmd: &str, args: &[&str]) -> bool {
+    eprintln!("[asp-fetch] {cmd} {}", args.join(" "));
+    match Command::new(cmd).args(args).status() {
+        Ok(status) => status.success(),
+        Err(e) => {
+            eprintln!("[asp-fetch] failed to spawn `{cmd}`: {e}");
+            false
         }
     }
+}
 
-    // 2. Relative paths — ordered from most to least likely.
-    //    The project may be laid out in different ways depending on the
-    //    developer's machine (sibling repo, sub-directory of a mono-repo, …).
-    let candidates: &[&str] = &[
-        // Sibling directory of delta-api's parent (most common monorepo layout)
-        "../asp",
-        // delta-api lives two levels deep (e.g. midair-platform/delta-api),
-        // asp lives two levels deep in a different subtree (e.g. sa/asp)
-        "../../sa/asp",
-        "../../asp",
-        "../sa/asp",
-        // Three levels up
-        "../../../asp",
-        "../../../sa/asp",
-    ];
+/// Best-effort inter-process lock via an exclusively-created file.
+struct FileLock(PathBuf);
 
-    for rel in candidates {
-        let p = manifest_dir.join(rel);
-        // Use exists() + is_dir() instead of canonicalize() so we get a clear
-        // false rather than a panic when the path doesn't exist.
-        if p.exists() && p.is_dir() {
-            // Best-effort canonicalize — fall back to the un-canonicalized path.
-            return Some(p.canonicalize().unwrap_or(p));
+impl FileLock {
+    fn acquire(path: &Path) -> FileLock {
+        use std::io::ErrorKind;
+        // Up to ~5 minutes, then assume the lock is stale and proceed.
+        for _ in 0..600 {
+            match fs::OpenOptions::new().write(true).create_new(true).open(path) {
+                Ok(_) => return FileLock(path.to_path_buf()),
+                Err(e) if e.kind() == ErrorKind::AlreadyExists => {
+                    std::thread::sleep(Duration::from_millis(500));
+                }
+                Err(_) => return FileLock(path.to_path_buf()),
+            }
         }
+        FileLock(path.to_path_buf())
     }
+}
 
-    None
+impl Drop for FileLock {
+    fn drop(&mut self) {
+        let _ = fs::remove_file(&self.0);
+    }
 }
 
 // ─────────────────────────────────────────────────────────────────────────────
