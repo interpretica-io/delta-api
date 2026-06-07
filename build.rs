@@ -44,22 +44,18 @@ use std::path::{Path, PathBuf};
 use std::process::Command;
 use std::time::Duration;
 
-/// Upstream asp repository. Overridable with `ASP_GIT_URL` / `ASP_GIT_REF`.
-/// The ref is pinned to a release tag for reproducible builds; bump it together
-/// with the FFI surface this crate consumes (bindings are regenerated from the
-/// fetched headers, so a wrong ref surfaces as a compile error here, never a
-/// silent ABI mismatch).
-const ASP_GIT_URL_DEFAULT: &str = "https://github.com/interpretica-io/asp";
-const ASP_GIT_REF_DEFAULT: &str = "v1.10.0";
-
 /// asp's own build image and the Dockerfile that produces it (relative to the
 /// asp source root). Override the image name/tag with `ASP_DOCKER_IMAGE`.
 const ASP_DOCKER_IMAGE_DEFAULT: &str = "asp:ubuntu_2404";
 const ASP_DOCKERFILE: &str = "tools/build-env/Dockerfile_ubuntu_2404";
 
 fn main() {
+    let manifest_dir = PathBuf::from(env::var("CARGO_MANIFEST_DIR").unwrap());
+
     // ── Rebuild triggers ──────────────────────────────────────────────────
     println!("cargo:rerun-if-changed=build.rs");
+    // The pinned asp URL/ref live in Cargo.toml metadata.
+    println!("cargo:rerun-if-changed=Cargo.toml");
     for key in [
         "ASP_GIT_URL",
         "ASP_GIT_REF",
@@ -72,7 +68,8 @@ fn main() {
     }
 
     // ── Clone the pinned asp, build libasp for this target, locate it ──────
-    let asp_dir = clone_asp();
+    let (asp_url, asp_ref) = asp_source(&manifest_dir);
+    let asp_dir = clone_asp(&asp_url, &asp_ref);
     let (build_subdir, run_make_flag) = target_build();
     let lib_dir = build_libasp(&asp_dir, &build_subdir, run_make_flag);
 
@@ -106,13 +103,53 @@ fn main() {
 }
 
 // ─────────────────────────────────────────────────────────────────────────────
+// asp source (URL + ref). The pin MUST be declared in Cargo.toml
+// (`[package.metadata.asp]`); a missing entry is a hard error. Env vars
+// `ASP_GIT_URL` / `ASP_GIT_REF` override the value at build time.
+// ─────────────────────────────────────────────────────────────────────────────
+
+fn asp_source(manifest_dir: &Path) -> (String, String) {
+    let (meta_url, meta_ref) = read_asp_metadata(manifest_dir);
+    let url = env::var("ASP_GIT_URL").ok().or(meta_url).unwrap_or_else(|| {
+        panic!("[package.metadata.asp] git-url is missing from Cargo.toml (set it or ASP_GIT_URL)")
+    });
+    let git_ref = env::var("ASP_GIT_REF").ok().or(meta_ref).unwrap_or_else(|| {
+        panic!("[package.metadata.asp] git-ref is missing from Cargo.toml (set it or ASP_GIT_REF)")
+    });
+    (url, git_ref)
+}
+
+/// Read `[package.metadata.asp] git-url / git-ref` from the crate's Cargo.toml.
+fn read_asp_metadata(manifest_dir: &Path) -> (Option<String>, Option<String>) {
+    let path = manifest_dir.join("Cargo.toml");
+    let text = match fs::read_to_string(&path) {
+        Ok(t) => t,
+        Err(_) => return (None, None),
+    };
+    let value: toml::Value = match text.parse() {
+        Ok(v) => v,
+        Err(e) => {
+            eprintln!("[asp-build] could not parse {}: {e}", path.display());
+            return (None, None);
+        }
+    };
+    let asp = value
+        .get("package")
+        .and_then(|p| p.get("metadata"))
+        .and_then(|m| m.get("asp"));
+    let field = |name: &str| {
+        asp.and_then(|a| a.get(name))
+            .and_then(|v| v.as_str())
+            .map(str::to_string)
+    };
+    (field("git-url"), field("git-ref"))
+}
+
+// ─────────────────────────────────────────────────────────────────────────────
 // Clone the pinned asp into a shared cache.
 // ─────────────────────────────────────────────────────────────────────────────
 
-fn clone_asp() -> PathBuf {
-    let url = env::var("ASP_GIT_URL").unwrap_or_else(|_| ASP_GIT_URL_DEFAULT.to_string());
-    let git_ref = env::var("ASP_GIT_REF").unwrap_or_else(|_| ASP_GIT_REF_DEFAULT.to_string());
-
+fn clone_asp(url: &str, git_ref: &str) -> PathBuf {
     let cache_root = cache_root();
     fs::create_dir_all(&cache_root).unwrap_or_else(|e| {
         panic!(
@@ -145,18 +182,18 @@ fn clone_asp() -> PathBuf {
         let shallow = run(
             "git",
             &[
-                "clone", "--quiet", "--depth", "1", "--branch", &git_ref, &url, src_str,
+                "clone", "--quiet", "--depth", "1", "--branch", git_ref, url, src_str,
             ],
         );
         if !shallow {
             // Fallback: full clone + checkout (handles raw commit SHAs).
             let _ = fs::remove_dir_all(&src);
-            if !run("git", &["clone", "--quiet", &url, src_str]) {
+            if !run("git", &["clone", "--quiet", url, src_str]) {
                 panic!(
                     "git clone of asp ({url}) failed — is git installed and the network reachable?"
                 );
             }
-            if !run("git", &["-C", src_str, "checkout", "--quiet", &git_ref]) {
+            if !run("git", &["-C", src_str, "checkout", "--quiet", git_ref]) {
                 panic!("git checkout of asp ref '{git_ref}' failed");
             }
         }
