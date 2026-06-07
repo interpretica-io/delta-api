@@ -126,7 +126,8 @@ async fn unknown_node_operations_report_not_found() {
         json!({"op": "disconnect", "result": "NodeNotFound"})
     );
     assert_eq!(
-        c.call(r#"{"op":"run","name":"ghost","subject":"Sa"}"#).await,
+        c.call(r#"{"op":"run","name":"ghost","subject":"Sa"}"#)
+            .await,
         json!({"op": "run", "result": "NodeNotFound"})
     );
 
@@ -157,7 +158,8 @@ async fn deploy_and_run_require_a_connection() {
 
     // The node exists but was never connected.
     assert_eq!(
-        c.call(r#"{"op":"deploy","name":"n1","subject":"Sa"}"#).await,
+        c.call(r#"{"op":"deploy","name":"n1","subject":"Sa"}"#)
+            .await,
         json!({"op": "deploy", "result": "NodeNotConnected"})
     );
     assert_eq!(
