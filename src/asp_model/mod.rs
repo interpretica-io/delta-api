@@ -22,6 +22,8 @@
  * DEALINGS IN THE SOFTWARE.
  */
 
+// Pure Rust data models for asp requests/results. They carry no FFI and link
+// nothing native, so they stay available regardless of the `asp_client` feature.
 pub mod address;
 pub mod analysis;
 pub mod enums;
@@ -34,6 +36,12 @@ pub mod status;
 pub mod symbol;
 pub mod workspace;
 
+// The native libasp client (FFI bindings in `sys`, safe wrapper in
+// `connection`) is the only part that links the native library. Gate it behind
+// `asp_client` so the crate can be built without a libasp toolchain (e.g. for
+// wasm). The build script skips the native build under the same condition.
+#[cfg(feature = "asp_client")]
 pub(crate) mod sys;
 
+#[cfg(feature = "asp_client")]
 pub mod connection;

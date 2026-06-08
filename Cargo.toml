@@ -1,6 +1,6 @@
 [package]
 name = "delta-api"
-version = "1.6.0"
+version = "1.7.0"
 edition = "2021"
 links = "asp"
 
@@ -23,11 +23,15 @@ async-trait = { version = "0.1", optional = true }
 bindgen = "0.70"
 toml = "0.8"
 
+# `asp_client` is on by default so existing consumers keep linking libasp with no
+# change. Disable it (`default-features = false`) to build without the native
+# library — e.g. the wasm WebUI, which only needs the pure data models.
 [features]
+default = [ "asp_client" ]
 object_model = [ "russh", "tokio", "async-trait" ]
-# The asp client (FFI to native libasp) is always compiled in now, so this
-# feature is a no-op. It is kept so existing `delta-api/asp_client` references in
-# downstream crates keep resolving.
+# The asp client: FFI bindings + safe wrapper around native libasp
+# (`asp_model::connection` / `sys`). Gates both those Rust modules and the libasp
+# build in build.rs. The pure asp data models stay available without it.
 asp_client = []
 # Network server exposing the Delta API (NodePool) over newline-delimited JSON.
 server = [ "object_model" ]

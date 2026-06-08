@@ -73,6 +73,16 @@ fn main() {
     ] {
         println!("cargo:rerun-if-env-changed={key}");
     }
+    // Feature toggles whether the native libasp is built/linked at all.
+    println!("cargo:rerun-if-env-changed=CARGO_FEATURE_ASP_CLIENT");
+
+    // The asp client (FFI to native libasp) is gated behind the `asp_client`
+    // feature. With it off there is nothing native to build or link, so skip the
+    // whole libasp build — this lets the crate compile for targets that cannot
+    // link a native dylib (e.g. the wasm WebUI) using only the pure data models.
+    if env::var_os("CARGO_FEATURE_ASP_CLIENT").is_none() {
+        return;
+    }
 
     // ── Obtain the asp source, build libasp for this target, locate it ────
     let (asp_url, asp_ref) = asp_source(&manifest_dir);
