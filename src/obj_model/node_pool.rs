@@ -194,11 +194,17 @@ impl NodePool {
         RemoveResult::Ok
     }
 
-    pub fn deploy(&mut self, name: String, subject: DeploySubject) -> DeployResult {
-        if subject == DeploySubject::Delta {
-            return DeployResult::InvalidArgument;
+    /// Per-subject on-node layout: where the archive lands, where it extracts,
+    /// and the binary to invoke. Keeps deploy/run uniform across agents.
+    fn subject_layout(subject: &DeploySubject) -> (&'static str, &'static str, &'static str) {
+        match subject {
+            // (working dir, uploaded archive path, binary)
+            DeploySubject::Sa => ("/tmp/visao", "/tmp/visao-archive.tar.xz", "/tmp/visao/bin/visao"),
+            DeploySubject::Delta => ("/tmp/delta", "/tmp/delta-archive.tar.xz", "/tmp/delta/bin/delta"),
         }
+    }
 
+    pub fn deploy(&mut self, name: String, subject: DeploySubject) -> DeployResult {
         if !self.nodes.contains_key(&name) {
             error!("Node doesn't exist: {}", name);
             return DeployResult::NodeNotFound;
@@ -222,11 +228,9 @@ impl NodePool {
 
         let sess = inst.ssh_session.as_ref().unwrap();
         let distr = self.get_node_param(&node, NodeParameters::Distr);
+        let (dir, archive, binary) = Self::subject_layout(&subject);
 
-        if !sess
-            .upload_file(&distr, "/tmp/visao-archive.tar.xz")
-            .unwrap_or(false)
-        {
+        if !sess.upload_file(&distr, archive).unwrap_or(false) {
             conn_status.set_subject(subject, subject_st);
             self.set_state(name, conn_status);
             return DeployResult::DeployCopyFailed;
@@ -235,7 +239,9 @@ impl NodePool {
 
         let extract = Self::sess_exec(
             sess,
-            "tar xvf /tmp/visao-archive.tar.xz -C /tmp/visao > /dev/null 2> /dev/null && echo ok",
+            &format!(
+                "mkdir -p {dir} && tar xf {archive} -C {dir} > /dev/null 2> /dev/null && echo ok"
+            ),
         );
         if extract.trim().is_empty() {
             conn_status.set_subject(subject, subject_st);
@@ -244,7 +250,7 @@ impl NodePool {
         }
         subject_st.deploy_archive_extracted = true;
 
-        let version = Self::sess_exec(sess, "/tmp/visao/bin/visao --version");
+        let version = Self::sess_exec(sess, &format!("{binary} --version"));
         if version.trim().is_empty() {
             conn_status.set_subject(subject, subject_st);
             self.set_state(name, conn_status);
@@ -277,24 +283,48 @@ impl NodePool {
         let mut subject_st = conn_status.get_subject(subject.clone());
         subject_st.running = false;
 
+        let (dir, _archive, binary) = Self::subject_layout(&subject);
+
         // Kill existing instance, if any.
         let _ = Self::sess_exec(
             sess,
-            "/bin/bash -c 'test -f /tmp/visao/pid && test $(cat /tmp/visao/pid) -gt 0 && kill $(cat /tmp/visao/pid)'",
+            &format!(
+                "/bin/bash -c 'test -f {dir}/pid && test $(cat {dir}/pid) -gt 0 && kill $(cat {dir}/pid)'"
+            ),
         );
 
-        let (bind_addr, bind_port) = self.infer_conn_params(&node);
-        let commands = vec![
-            format!(
-                "/tmp/visao/bin/visao --server 'tcp://{}:{}' < /dev/null > /dev/null 2> /dev/null &",
-                bind_addr, bind_port
-            ),
-            "echo $! > /tmp/visao/pid".to_string(),
-            format!("echo {} > /tmp/visao/bind_addr", bind_addr),
-            format!("echo {} > /tmp/visao/bind_port", bind_port),
-            "sleep 4".to_string(),
-            "kill -0 \"$(cat /tmp/visao/pid)\" && echo pid \"$(cat /tmp/visao/pid)\"".to_string(),
-        ];
+        let launch = match subject {
+            DeploySubject::Sa => {
+                let (bind_addr, bind_port) = self.infer_conn_params(&node);
+                vec![
+                    format!(
+                        "{binary} --server 'tcp://{}:{}' < /dev/null > /dev/null 2> /dev/null &",
+                        bind_addr, bind_port
+                    ),
+                    format!("echo $! > {dir}/pid"),
+                    format!("echo {} > {dir}/bind_addr", bind_addr),
+                    format!("echo {} > {dir}/bind_port", bind_port),
+                ]
+            }
+            // Delta calls home to a collector rather than binding a port; the
+            // control-plane operating model. Flags come from node parameters
+            // and are only added when set (a bare node still runs, unsigned).
+            DeploySubject::Delta => {
+                vec![
+                    format!(
+                        "{binary} {} < /dev/null > /dev/null 2> /dev/null &",
+                        self.delta_run_args(&node)
+                    ),
+                    format!("echo $! > {dir}/pid"),
+                ]
+            }
+        };
+
+        let mut commands = launch;
+        commands.push("sleep 4".to_string());
+        commands.push(format!(
+            "kill -0 \"$(cat {dir}/pid)\" && echo pid \"$(cat {dir}/pid)\""
+        ));
 
         let exec_result = sess.shell_exec(&commands).unwrap_or_default();
         if !exec_result.contains("pid") {
@@ -325,6 +355,70 @@ impl NodePool {
         }
     }
 
+    /// A parameter value is safe to embed in a single-quoted shell argument
+    /// only if it carries no single quote or control/meta character. Anything
+    /// else is dropped (empty), exactly as bind params are, so a hostile or
+    /// malformed value can never break out of its quotes.
+    fn shell_safe(v: String) -> String {
+        if v.is_empty() {
+            return v;
+        }
+        let bad = v
+            .chars()
+            .any(|c| c.is_control() || matches!(c, '\'' | '"' | '`' | '$' | '\\' | ';' | '&' | '|' | '<' | '>' | '(' | ')' | ' '));
+        if bad {
+            error!("Dropping delta run parameter with unsafe characters: {}", v);
+            String::new()
+        } else {
+            v
+        }
+    }
+
+    /// Build the delta agent's call-home argument string from node parameters.
+    /// Only sets a flag when its parameter is present and shell-safe.
+    fn delta_run_args(&self, node: &Node) -> String {
+        let p = |np| Self::shell_safe(self.get_node_param(node, np));
+
+        let interval = {
+            let iv = self.get_node_param(node, NodeParameters::Interval);
+            match iv.trim().parse::<u32>() {
+                Ok(n) if n > 0 => n,
+                _ => 60, // sane default: report every minute
+            }
+        };
+
+        let mut args = vec![format!("--interval {interval}")];
+
+        let collector = p(NodeParameters::CollectorUrl);
+        if !collector.is_empty() {
+            args.push(format!("--server '{collector}'"));
+        }
+        let token = p(NodeParameters::Token);
+        if !token.is_empty() {
+            args.push(format!("--token '{token}'"));
+        }
+        let verify_key = p(NodeParameters::VerifyKey);
+        if !verify_key.is_empty() {
+            args.push(format!("--verify-key '{verify_key}'"));
+        }
+        let stun = p(NodeParameters::Stun);
+        if !stun.is_empty() {
+            args.push(format!("--stun '{stun}'"));
+        }
+        // --allow-response requires a verify key on the agent side too; only
+        // offer it when one is configured, so we never ask for destructive
+        // response without the signing that gates it.
+        let allow = self.get_node_param(node, NodeParameters::AllowResponse);
+        let allow = matches!(allow.trim(), "1" | "true" | "yes" | "on");
+        if allow && !verify_key.is_empty() {
+            args.push("--allow-response".to_string());
+        } else if allow {
+            error!("Ignoring AllowResponse: no VerifyKey configured for the node");
+        }
+
+        args.join(" ")
+    }
+
     fn infer_conn_params(&self, node: &Node) -> (String, String) {
         let mut bind_addr = self.get_node_param(node, NodeParameters::BindAddr);
         if bind_addr.contains('\'') || bind_addr.contains('"') {
@@ -344,5 +438,79 @@ impl NodePool {
             bind_port = "5700".to_string();
         }
         (bind_addr, bind_port)
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use crate::data_model::node_parameters::NodeParameters;
+
+    fn node_with(params: &[(NodeParameters, &str)]) -> (NodePool, Node) {
+        let mut pool = NodePool::new();
+        let mut m = HashMap::new();
+        for (k, v) in params {
+            m.insert(k.to_string(), v.to_string());
+        }
+        pool.add("n".to_string(), "host".to_string(), m);
+        let node = pool.nodes["n"].clone();
+        (pool, node)
+    }
+
+    #[test]
+    fn delta_args_bare_node_defaults_interval() {
+        let (pool, node) = node_with(&[]);
+        assert_eq!(pool.delta_run_args(&node), "--interval 60");
+    }
+
+    #[test]
+    fn delta_args_full_node() {
+        let (pool, node) = node_with(&[
+            (NodeParameters::Interval, "30"),
+            (NodeParameters::CollectorUrl, "https://c.example/ingest"),
+            (NodeParameters::Token, "abc123"),
+            (
+                NodeParameters::VerifyKey,
+                "79b5562e8fe654f94078b112e8a98ba7901f853ae695bed7e0e3910bad049664",
+            ),
+            (NodeParameters::Stun, "stun.l.google.com:19302"),
+            (NodeParameters::AllowResponse, "true"),
+        ]);
+        let args = pool.delta_run_args(&node);
+        assert!(args.contains("--interval 30"), "{args}");
+        assert!(args.contains("--server 'https://c.example/ingest'"), "{args}");
+        assert!(args.contains("--token 'abc123'"), "{args}");
+        assert!(args.contains("--verify-key '79b5562e"), "{args}");
+        assert!(args.contains("--stun 'stun.l.google.com:19302'"), "{args}");
+        assert!(args.contains("--allow-response"), "{args}");
+    }
+
+    #[test]
+    fn allow_response_requires_verify_key() {
+        // Opt-in set but no key: the destructive flag must not be offered.
+        let (pool, node) = node_with(&[(NodeParameters::AllowResponse, "1")]);
+        let args = pool.delta_run_args(&node);
+        assert!(!args.contains("--allow-response"), "{args}");
+    }
+
+    #[test]
+    fn drops_shell_injection_in_params() {
+        // A collector URL trying to break out of its single quotes is dropped,
+        // so --server is simply absent rather than injected.
+        let (pool, node) = node_with(&[(
+            NodeParameters::CollectorUrl,
+            "https://x/'; rm -rf / #",
+        )]);
+        let args = pool.delta_run_args(&node);
+        assert!(!args.contains("--server"), "{args}");
+        assert!(!args.contains("rm -rf"), "{args}");
+    }
+
+    #[test]
+    fn bad_interval_falls_back_to_default() {
+        let (pool, node) = node_with(&[(NodeParameters::Interval, "not-a-number")]);
+        assert_eq!(pool.delta_run_args(&node), "--interval 60");
+        let (pool, node) = node_with(&[(NodeParameters::Interval, "0")]);
+        assert_eq!(pool.delta_run_args(&node), "--interval 60");
     }
 }

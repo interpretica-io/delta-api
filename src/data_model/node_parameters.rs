@@ -30,4 +30,22 @@ pub enum NodeParameters {
     Distr,
     BindAddr,
     BindPort,
+
+    // Delta agent (call-home) run parameters. All optional; a flag is passed
+    // only when its parameter is non-empty, so a bare node still runs.
+    /// Collector URL the delta agent reports to (`--server`), e.g.
+    /// `https://collector.example.com/ingest`.
+    CollectorUrl,
+    /// Identification token embedded in reports and sent as a bearer
+    /// (`--token`).
+    Token,
+    /// Ed25519 public key (hex) authenticating control commands
+    /// (`--verify-key`).
+    VerifyKey,
+    /// Monitor interval in seconds (`--interval`); defaults to 60 when unset.
+    Interval,
+    /// "1"/"true" to honor destructive response commands (`--allow-response`).
+    AllowResponse,
+    /// STUN server for the reachability/​wake beacon (`--stun`).
+    Stun,
 }
