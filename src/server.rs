@@ -41,12 +41,14 @@
 use std::collections::HashMap;
 use std::io;
 use std::net::SocketAddr;
+use std::sync::atomic::{AtomicU64, Ordering};
 use std::sync::{Arc, Mutex};
 
 use serde::{Deserialize, Serialize};
 use tokio::io::{AsyncBufReadExt, AsyncWriteExt, BufReader};
 use tokio::net::{TcpListener, TcpStream};
 
+use crate::control::ControlKey;
 use crate::data_model::conn_alive_status::ConnAliveStatus;
 use crate::data_model::conn_status::ConnStatus;
 use crate::data_model::deploy_subject::DeploySubject;
@@ -57,6 +59,54 @@ use crate::data_model::result::disconnect_result::DisconnectResult;
 use crate::data_model::result::remove_result::RemoveResult;
 use crate::data_model::result::run_result::RunResult;
 use crate::obj_model::node_pool::NodePool;
+
+/// Control-plane signing state shared across connections: the Ed25519 key that
+/// authenticates commands to `delta --verify-key`, and a monotonic sequence
+/// source for replay protection.
+pub struct ControlState {
+    key: ControlKey,
+    seq: AtomicU64,
+}
+
+impl ControlState {
+    /// Load the control key from `DELTA_CONTROL_KEY` (a 64-hex-char Ed25519
+    /// seed) so the fleet's pinned public key survives a restart; if unset or
+    /// malformed, generate an ephemeral key and log its public half. `seq`
+    /// starts from `DELTA_CONTROL_SEQ` (default 0) so a restart does not reissue
+    /// already-consumed sequence numbers.
+    pub fn from_env() -> Self {
+        let key = match std::env::var("DELTA_CONTROL_KEY") {
+            Ok(hex) => match ControlKey::from_seed_hex(&hex) {
+                Ok(k) => k,
+                Err(_) => {
+                    log::error!("DELTA_CONTROL_KEY is not a 64-hex-char seed; generating ephemeral key");
+                    ControlKey::generate()
+                }
+            },
+            Err(_) => {
+                let k = ControlKey::generate();
+                log::warn!(
+                    "No DELTA_CONTROL_KEY set; using an ephemeral control key. \
+                     Pin this on agents via --verify-key {}",
+                    k.public_hex()
+                );
+                k
+            }
+        };
+        let start = std::env::var("DELTA_CONTROL_SEQ")
+            .ok()
+            .and_then(|s| s.trim().parse::<u64>().ok())
+            .unwrap_or(0);
+        ControlState {
+            key,
+            seq: AtomicU64::new(start),
+        }
+    }
+
+    fn next_seq(&self) -> u64 {
+        self.seq.fetch_add(1, Ordering::SeqCst) + 1
+    }
+}
 
 /// The default address the server binds to when none is supplied.
 pub const DEFAULT_BIND_ADDR: &str = "127.0.0.1:7700";
@@ -100,6 +150,17 @@ pub enum Request {
     IsAlive { name: String },
     /// List the names of every registered node.
     ListNodes,
+    /// Return the control-plane public key (hex) to pin on agents via
+    /// `--verify-key`.
+    ControlPubkey,
+    /// Sign a control command payload into an envelope the agent will accept.
+    /// `commands` is the value of the `commands` array; `seq` overrides the
+    /// server's monotonic sequence when the caller manages its own.
+    SignCommand {
+        commands: serde_json::Value,
+        #[serde(default)]
+        seq: Option<u64>,
+    },
     /// Liveness check for the server itself.
     Ping,
 }
@@ -121,6 +182,11 @@ pub enum Response {
     IsConnected(ConnStatus),
     IsAlive(ConnAliveStatus),
     ListNodes(Vec<String>),
+    /// The control-plane public key (hex), reply to [`Request::ControlPubkey`].
+    ControlPubkey { pubkey: String },
+    /// A signed command envelope plus the sequence embedded in it, reply to
+    /// [`Request::SignCommand`].
+    SignedCommand { envelope: String, seq: u64 },
     /// Successful reply to [`Request::Ping`].
     Pong,
     /// The request line could not be parsed or executed.
@@ -133,7 +199,24 @@ pub enum Response {
 ///
 /// This is synchronous and may block on SSH I/O, so callers should run it off
 /// the async runtime — see [`handle_connection`].
-pub fn handle_request(pool: &Mutex<NodePool>, req: Request) -> Response {
+pub fn handle_request(pool: &Mutex<NodePool>, control: &ControlState, req: Request) -> Response {
+    // Signing needs no pool lock; handle it before taking the guard.
+    match &req {
+        Request::ControlPubkey => {
+            return Response::ControlPubkey {
+                pubkey: control.key.public_hex(),
+            }
+        }
+        Request::SignCommand { commands, seq } => {
+            let seq = seq.unwrap_or_else(|| control.next_seq());
+            return Response::SignedCommand {
+                envelope: control.key.sign_command(commands, Some(seq)),
+                seq,
+            };
+        }
+        _ => {}
+    }
+
     // A poisoned mutex means an earlier handler panicked mid-update. Recover
     // the guard instead of propagating the panic to every later request.
     let mut pool = pool.lock().unwrap_or_else(|poisoned| poisoned.into_inner());
@@ -153,6 +236,8 @@ pub fn handle_request(pool: &Mutex<NodePool>, req: Request) -> Response {
             Response::ListNodes(names)
         }
         Request::Ping => Response::Pong,
+        // Handled above, before the pool lock.
+        Request::ControlPubkey | Request::SignCommand { .. } => unreachable!(),
     }
 }
 
@@ -160,6 +245,7 @@ pub fn handle_request(pool: &Mutex<NodePool>, req: Request) -> Response {
 pub struct Server {
     listener: TcpListener,
     pool: Arc<Mutex<NodePool>>,
+    control: Arc<ControlState>,
 }
 
 impl Server {
@@ -170,6 +256,7 @@ impl Server {
         Ok(Server {
             listener,
             pool: Arc::new(Mutex::new(NodePool::new())),
+            control: Arc::new(ControlState::from_env()),
         })
     }
 
@@ -184,8 +271,9 @@ impl Server {
         loop {
             let (stream, peer) = self.listener.accept().await?;
             let pool = self.pool.clone();
+            let control = self.control.clone();
             tokio::spawn(async move {
-                if let Err(e) = handle_connection(stream, pool).await {
+                if let Err(e) = handle_connection(stream, pool, control).await {
                     log::error!("connection {peer} ended with error: {e}");
                 }
             });
@@ -194,7 +282,11 @@ impl Server {
 }
 
 /// Serve a single client connection: read request lines, write response lines.
-async fn handle_connection(stream: TcpStream, pool: Arc<Mutex<NodePool>>) -> io::Result<()> {
+async fn handle_connection(
+    stream: TcpStream,
+    pool: Arc<Mutex<NodePool>>,
+    control: Arc<ControlState>,
+) -> io::Result<()> {
     let peer = stream.peer_addr().ok();
     let (read_half, mut write_half) = stream.into_split();
     let mut lines = BufReader::new(read_half).lines();
@@ -208,9 +300,11 @@ async fn handle_connection(stream: TcpStream, pool: Arc<Mutex<NodePool>>) -> io:
         let response = match serde_json::from_str::<Request>(&line) {
             Ok(req) => {
                 let pool = pool.clone();
+                let control = control.clone();
                 // NodePool operations block on SSH I/O; keep them off the
                 // async runtime worker thread.
-                match tokio::task::spawn_blocking(move || handle_request(&pool, req)).await {
+                match tokio::task::spawn_blocking(move || handle_request(&pool, &control, req)).await
+                {
                     Ok(resp) => resp,
                     Err(join_err) => Response::Error {
                         message: format!("internal handler error: {join_err}"),

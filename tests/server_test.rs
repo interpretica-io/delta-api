@@ -131,13 +131,13 @@ async fn unknown_node_operations_report_not_found() {
         json!({"op": "run", "result": "NodeNotFound"})
     );
 
-    // Deploying the Delta subject is rejected before any node lookup.
+    // Deploying either subject onto an unknown node reports NodeNotFound
+    // (Delta is now a real deploy target, no longer rejected up front).
     assert_eq!(
         c.call(r#"{"op":"deploy","name":"ghost","subject":"Delta"}"#)
             .await,
-        json!({"op": "deploy", "result": "InvalidArgument"})
+        json!({"op": "deploy", "result": "NodeNotFound"})
     );
-    // Deploying a Sa subject onto an unknown node reports NodeNotFound.
     assert_eq!(
         c.call(r#"{"op":"deploy","name":"ghost","subject":"Sa"}"#)
             .await,
@@ -238,4 +238,61 @@ async fn multiple_requests_are_pipelined_on_one_connection() {
         next(&mut c.lines).await,
         json!({"op": "list_nodes", "result": ["p"]})
     );
+}
+
+fn hex_decode(s: &str) -> Vec<u8> {
+    (0..s.len() / 2)
+        .map(|i| u8::from_str_radix(&s[i * 2..i * 2 + 2], 16).unwrap())
+        .collect()
+}
+
+#[tokio::test]
+async fn control_signing_over_the_api() {
+    let addr = start_server().await;
+    let mut c = Client::connect(addr).await;
+
+    // The public key to pin on agents (--verify-key) is 32 bytes of hex.
+    let pk = c.call(r#"{"op":"control_pubkey"}"#).await;
+    assert_eq!(pk["op"], "control_pubkey");
+    let pubkey = pk["result"]["pubkey"].as_str().unwrap();
+    assert_eq!(pubkey.len(), 64);
+    assert!(pubkey.chars().all(|ch| ch.is_ascii_hexdigit()));
+
+    // Signing a command returns an envelope whose signed payload carries the
+    // command and the caller-supplied seq, and whose signature verifies under
+    // the pinned key.
+    let resp = c
+        .call(r#"{"op":"sign_command","commands":[{"action":"disable"}],"seq":5}"#)
+        .await;
+    assert_eq!(resp["op"], "signed_command");
+    assert_eq!(resp["result"]["seq"], 5);
+    let envelope: Value =
+        serde_json::from_str(resp["result"]["envelope"].as_str().unwrap()).unwrap();
+    let signed = hex_decode(envelope["signed"].as_str().unwrap());
+    let payload: Value = serde_json::from_slice(&signed).unwrap();
+    assert_eq!(payload["seq"], 5);
+    assert_eq!(payload["commands"][0]["action"], "disable");
+
+    let sig = hex_decode(envelope["sig"].as_str().unwrap());
+    assert_eq!(sig.len(), 64);
+    // The signature is valid Ed25519 over the exact signed bytes — the same
+    // check the C agent performs.
+    use ed25519_dalek::{Signature, Verifier, VerifyingKey};
+    let mut pkb = [0u8; 32];
+    pkb.copy_from_slice(&hex_decode(pubkey));
+    let vk = VerifyingKey::from_bytes(&pkb).unwrap();
+    let mut sigb = [0u8; 64];
+    sigb.copy_from_slice(&sig);
+    assert!(vk.verify(&signed, &Signature::from_bytes(&sigb)).is_ok());
+
+    // Without an explicit seq the server assigns a monotonically increasing one.
+    let a = c
+        .call(r#"{"op":"sign_command","commands":[{"action":"enable"}]}"#)
+        .await;
+    let b = c
+        .call(r#"{"op":"sign_command","commands":[{"action":"enable"}]}"#)
+        .await;
+    let sa = a["result"]["seq"].as_u64().unwrap();
+    let sb = b["result"]["seq"].as_u64().unwrap();
+    assert!(sb > sa, "server seq must increase: {sa} then {sb}");
 }
