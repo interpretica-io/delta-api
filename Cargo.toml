@@ -18,6 +18,8 @@ log = { version = "0.4.0" }
 russh = { version = "0.45", optional = true }
 tokio = { version = "1", features = ["rt-multi-thread", "macros", "io-util", "sync", "net"], optional = true }
 async-trait = { version = "0.1", optional = true }
+ed25519-dalek = { version = "2", optional = true }
+getrandom = { version = "0.2", optional = true }
 
 [build-dependencies]
 bindgen = "0.70"
@@ -27,14 +29,17 @@ toml = "0.8"
 # change. Disable it (`default-features = false`) to build without the native
 # library — e.g. the wasm WebUI, which only needs the pure data models.
 [features]
-default = [ "asp_client" ]
+default = [ "asp_client", "control" ]
 object_model = [ "russh", "tokio", "async-trait" ]
+# Control-plane command signing (server side of `delta --verify-key`): Ed25519
+# keygen + signed-envelope production, byte-compatible with the agent's verifier.
+control = [ "ed25519-dalek", "getrandom" ]
 # The asp client: FFI bindings + safe wrapper around native libasp
 # (`asp_model::connection` / `sys`). Gates both those Rust modules and the libasp
 # build in build.rs. The pure asp data models stay available without it.
 asp_client = []
 # Network server exposing the Delta API (NodePool) over newline-delimited JSON.
-server = [ "object_model" ]
+server = [ "object_model", "control" ]
 
 [[bin]]
 name = "delta-server"

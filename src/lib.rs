@@ -23,6 +23,8 @@
  */
 
 pub mod asp_model;
+#[cfg(feature = "control")]
+pub mod control;
 pub mod data_model;
 pub mod obj_model;
 
