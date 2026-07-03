@@ -405,6 +405,10 @@ impl NodePool {
         if !stun.is_empty() {
             args.push(format!("--stun '{stun}'"));
         }
+        let binaries = p(NodeParameters::BinariesDir);
+        if !binaries.is_empty() {
+            args.push(format!("--binaries '{binaries}'"));
+        }
         // --allow-response requires a verify key on the agent side too; only
         // offer it when one is configured, so we never ask for destructive
         // response without the signing that gates it.
@@ -475,6 +479,7 @@ mod tests {
             ),
             (NodeParameters::Stun, "stun.l.google.com:19302"),
             (NodeParameters::AllowResponse, "true"),
+            (NodeParameters::BinariesDir, "/"),
         ]);
         let args = pool.delta_run_args(&node);
         assert!(args.contains("--interval 30"), "{args}");
@@ -483,6 +488,7 @@ mod tests {
         assert!(args.contains("--verify-key '79b5562e"), "{args}");
         assert!(args.contains("--stun 'stun.l.google.com:19302'"), "{args}");
         assert!(args.contains("--allow-response"), "{args}");
+        assert!(args.contains("--binaries '/'"), "{args}");
     }
 
     #[test]
