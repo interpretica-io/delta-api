@@ -48,4 +48,7 @@ pub enum NodeParameters {
     AllowResponse,
     /// STUN server for the reachability/​wake beacon (`--stun`).
     Stun,
+    /// Directory the agent scans for ELF binary composition/provenance
+    /// (`--binaries <dir>`); e.g. `/` to profile the whole rootfs.
+    BinariesDir,
 }
