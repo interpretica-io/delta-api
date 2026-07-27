@@ -291,9 +291,11 @@ fn target_build() -> (String, Option<&'static str>) {
 /// `@loader_path`) lives in `<build>/fs/lib` — not the build tree's `<build>/lib`,
 /// whose libasp references a non-co-located libnng and fails to load at runtime.
 fn build_libasp(asp_dir: &Path, build_subdir: &str, run_make_flag: Option<&str>) -> PathBuf {
-    let lib_dir = asp_dir.join(build_subdir).join("fs").join("lib");
+    let build_dir = asp_dir.join(build_subdir);
+    let lib_dir = build_dir.join("fs").join("lib");
     let _lock = FileLock::acquire(&cache_root().join(".asp-build.lock"));
     if has_libasp(&lib_dir) {
+        colocate_nng(&build_dir, &lib_dir);
         return lib_dir;
     }
 
@@ -315,7 +317,31 @@ fn build_libasp(asp_dir: &Path, build_subdir: &str, run_make_flag: Option<&str>)
         "libasp was not produced in {}",
         lib_dir.display()
     );
+    colocate_nng(&build_dir, &lib_dir);
     lib_dir
+}
+
+/// asp's macOS build can produce nng as a shared library
+/// (`<build>/_deps/nng-stub-build/libnng*.dylib`) that `ninja install` does
+/// not co-locate into `fs/lib`, breaking the "self-contained fs/lib" contract
+/// this script relies on (libasp then aborts at load with
+/// "Library not loaded: @rpath/libnng.1.dylib"). Copy any nng runtime libs
+/// next to libasp so its `@loader_path` rpath resolves them.
+fn colocate_nng(build_dir: &Path, lib_dir: &Path) {
+    let nng_dir = build_dir.join("_deps").join("nng-stub-build");
+    let Ok(entries) = fs::read_dir(&nng_dir) else {
+        return;
+    };
+    for entry in entries.flatten() {
+        let name = entry.file_name();
+        let n = name.to_string_lossy();
+        if n.starts_with("libnng") && (n.contains(".dylib") || n.contains(".so")) {
+            let dst = lib_dir.join(&name);
+            if !dst.exists() {
+                let _ = fs::copy(entry.path(), &dst);
+            }
+        }
+    }
 }
 
 /// Build libasp inside asp's own Docker image via its `run_make.sh`.
