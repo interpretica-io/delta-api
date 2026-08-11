@@ -674,6 +674,12 @@ impl Connection {
         }
     }
 
+    /// Connect with no timeouts on the socket.
+    ///
+    /// Kept as it was for callers that already rely on it, but prefer
+    /// [`Connection::connect_nng_with_timeouts`]: a connection made here can
+    /// never time out, because the only moment the timeouts reach the socket
+    /// has already passed by the time this returns.
     pub fn connect_nng(url: &str) -> AspResult<Self> {
         debug!("ASP connecting (NNG) to {}", url);
         unsafe {
