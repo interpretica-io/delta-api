@@ -628,6 +628,52 @@ impl Connection {
     }
 
     /// Connect to an ASP server via an NNG URL (e.g. `"tcp://127.0.0.1:5700"`).
+    /// Connect, with the socket timeouts applied where they actually take
+    /// effect.
+    ///
+    /// `asp_connection_set_*_timeout` only records the value on the handle;
+    /// `asp_connection_connect` is what pushes it onto the nng socket
+    /// (`NNG_OPT_RECVTIMEO` / `NNG_OPT_SENDTIMEO`). Setting them after
+    /// connecting — the obvious reading of the API — leaves every send and
+    /// receive unbounded, so one unanswered request hangs the caller for good
+    /// and, worse, ties up an nng task for the life of the process.
+    pub fn connect_nng_with_timeouts(
+        url: &str,
+        send_ms: i32,
+        recv_ms: i32,
+    ) -> AspResult<Self> {
+        debug!(
+            "ASP connecting (NNG) to {} (send {} ms, recv {} ms)",
+            url, send_ms, recv_ms
+        );
+        unsafe {
+            let rc = sys::asp_initialize();
+            if rc != 0 {
+                return Err(asp_error(rc));
+            }
+            let conn = sys::asp_connection_create();
+            if conn.is_null() {
+                sys::asp_deinitialize();
+                return Err(AspError::NoMemory);
+            }
+            if send_ms > 0 {
+                sys::asp_connection_set_send_timeout(conn, send_ms);
+            }
+            if recv_ms > 0 {
+                sys::asp_connection_set_recv_timeout(conn, recv_ms);
+            }
+            let addr = build_c_address_nng(url)?;
+            let rc = sys::asp_connection_connect(conn, addr, true);
+            if rc != 0 {
+                error!("asp_connection_connect (NNG) failed: {}", rc);
+                sys::asp_connection_free(conn);
+                sys::asp_deinitialize();
+                return Err(asp_error(rc));
+            }
+            Ok(Connection { conn })
+        }
+    }
+
     pub fn connect_nng(url: &str) -> AspResult<Self> {
         debug!("ASP connecting (NNG) to {}", url);
         unsafe {
