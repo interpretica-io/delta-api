@@ -585,7 +585,13 @@ impl Drop for Connection {
         unsafe {
             sys::asp_connection_close(self.conn);
             sys::asp_connection_free(self.conn);
-            sys::asp_deinitialize();
+            // Deliberately not `asp_deinitialize()`. That calls `nng_fini()`,
+            // which tears the nng library down for the whole process — it is a
+            // process-exit call, not a per-connection one. Dropping one
+            // connection therefore left every later `nng_dial` in the process
+            // waiting for a task queue that no longer exists: the first
+            // analysis in a fresh process worked and every one after it hung
+            // for ever, with the server alive and listening the whole time.
         }
     }
 }
@@ -608,7 +614,8 @@ impl Connection {
 
             let conn = sys::asp_connection_create();
             if conn.is_null() {
-                sys::asp_deinitialize();
+                // No deinitialize here either: a connection that failed to be
+                // created must not take the process's nng runtime with it.
                 return Err(AspError::NoMemory);
             }
 
@@ -618,7 +625,6 @@ impl Connection {
             if rc != 0 {
                 error!("asp_connection_connect failed: {}", rc);
                 sys::asp_connection_free(conn);
-                sys::asp_deinitialize();
                 return Err(asp_error(rc));
             }
 
@@ -653,7 +659,8 @@ impl Connection {
             }
             let conn = sys::asp_connection_create();
             if conn.is_null() {
-                sys::asp_deinitialize();
+                // No deinitialize here either: a connection that failed to be
+                // created must not take the process's nng runtime with it.
                 return Err(AspError::NoMemory);
             }
             if send_ms > 0 {
@@ -667,7 +674,6 @@ impl Connection {
             if rc != 0 {
                 error!("asp_connection_connect (NNG) failed: {}", rc);
                 sys::asp_connection_free(conn);
-                sys::asp_deinitialize();
                 return Err(asp_error(rc));
             }
             Ok(Connection { conn })
@@ -690,7 +696,8 @@ impl Connection {
 
             let conn = sys::asp_connection_create();
             if conn.is_null() {
-                sys::asp_deinitialize();
+                // No deinitialize here either: a connection that failed to be
+                // created must not take the process's nng runtime with it.
                 return Err(AspError::NoMemory);
             }
 
@@ -699,7 +706,6 @@ impl Connection {
             if rc != 0 {
                 error!("asp_connection_connect (NNG) failed: {}", rc);
                 sys::asp_connection_free(conn);
-                sys::asp_deinitialize();
                 return Err(asp_error(rc));
             }
 
