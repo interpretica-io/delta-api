@@ -26,10 +26,12 @@
 // nothing native, so they stay available regardless of the `asp_client` feature.
 pub mod address;
 pub mod analysis;
+pub mod author;
 pub mod enums;
 pub mod env;
 pub mod file;
 pub mod identification;
+pub mod package;
 pub mod report;
 pub mod result;
 pub mod status;

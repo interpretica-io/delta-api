@@ -22,7 +22,9 @@
  * DEALINGS IN THE SOFTWARE.
  */
 
+use super::author::AuthorInfo;
 use super::identification::IdentificationFile;
+use super::package::PackageInfo;
 use super::report::Report;
 use super::symbol::{SymbolCall, SymbolLocation};
 use serde::{Deserialize, Serialize};
@@ -42,6 +44,12 @@ pub struct AnalysisResult {
     pub symbol_calls: Vec<SymbolCall>,
     /// Language identification results
     pub identification_files: Vec<IdentificationFile>,
+    /// Authorship facts, when the `authorship` job ran
+    #[serde(default)]
+    pub authors: Vec<AuthorInfo>,
+    /// Declared dependencies, when the `sbom` job ran
+    #[serde(default)]
+    pub packages: Vec<PackageInfo>,
 }
 
 impl AnalysisResult {

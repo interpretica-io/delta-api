@@ -36,6 +36,7 @@ use log::{debug, error};
 
 use super::address::Address;
 use super::analysis::{Analysis, AnalysisOutline, AnalysisState};
+use super::author::{AuthorFinding, AuthorInfo};
 use super::enums::{
     AnalysisJobKind, AnalysisPhase, Compiler, Cpu, IdentificationStatus, Language, Os,
     ReportSeverity, ResourceType, SymbolOrigin,
@@ -43,6 +44,7 @@ use super::enums::{
 use super::env::Environment;
 use super::file::File;
 use super::identification::{IdentificationFile, IdentificationReport};
+use super::package::{PackageInfo, VulnerabilityInfo};
 use super::report::Report;
 use super::result::AnalysisResult;
 use super::status::{AspError, AspResult};
@@ -165,12 +167,16 @@ fn to_c_os(o: &Os) -> u32 {
     }
 }
 
+// Must match `asp_analysis_job_kind` in asp_analysis_job_kind.h — the C enum
+// is the wire truth and this mapping is the only bridge to it.
 fn to_c_job_kind(k: &AnalysisJobKind) -> u32 {
     match k {
         AnalysisJobKind::Unknown => 0,
         AnalysisJobKind::Defects => 1,
         AnalysisJobKind::Identification => 2,
         AnalysisJobKind::Dependency => 3,
+        AnalysisJobKind::Authorship => 4,
+        AnalysisJobKind::Sbom => 5,
     }
 }
 
@@ -532,6 +538,78 @@ unsafe fn walk_ident_files(head: *mut sys::asp_identification_file) -> Vec<Ident
         let reports = walk_ident_reports(sys::asp_identification_file_get_report(ptr));
         out.push(IdentificationFile { file, reports });
         ptr = sys::asp_identification_file_next(ptr);
+    }
+    out
+}
+
+/// Convert a `*mut asp_author` linked list.
+///
+/// The numeric facts have no public accessors — they are read as struct
+/// fields, the same way `sarif_text` is read off the result. Bindgen carries
+/// the layout from the pinned asp headers, so the two cannot drift apart
+/// without a build failure.
+unsafe fn walk_authors(head: *mut sys::asp_author) -> Vec<AuthorInfo> {
+    let mut out = Vec::new();
+    let mut ptr = head;
+    while !ptr.is_null() {
+        let mut findings = Vec::new();
+        let mut f = (*ptr).finding;
+        while !f.is_null() {
+            findings.push(AuthorFinding {
+                rule: cstr_to_string((*f).rule as *const c_char).unwrap_or_default(),
+                count: (*f).count,
+            });
+            f = (*f).next;
+        }
+        out.push(AuthorInfo {
+            name: cstr_to_string((*ptr).name as *const c_char).unwrap_or_default(),
+            findings,
+            commits: (*ptr).commits,
+            days: (*ptr).days,
+            added: (*ptr).added,
+            removed: (*ptr).removed,
+            file_changes: (*ptr).file_changes,
+            largest_commit: (*ptr).largest_commit,
+            median_commit: (*ptr).median_commit,
+            busiest_day: (*ptr).busiest_day,
+            declared_assistant: (*ptr).declared_assistant,
+            reworked: (*ptr).reworked,
+            followed_by_fix: (*ptr).followed_by_fix,
+        });
+        ptr = (*ptr).next;
+    }
+    out
+}
+
+/// Convert a `*mut asp_package` linked list.
+unsafe fn walk_packages(head: *mut sys::asp_package) -> Vec<PackageInfo> {
+    let mut out = Vec::new();
+    let mut ptr = head;
+    while !ptr.is_null() {
+        let mut vulnerabilities = Vec::new();
+        let mut v = (*ptr).vulnerability;
+        while !v.is_null() {
+            vulnerabilities.push(VulnerabilityInfo {
+                id: cstr_to_string((*v).id as *const c_char).unwrap_or_default(),
+                source: cstr_to_string((*v).source as *const c_char).unwrap_or_default(),
+                severity: cstr_to_string((*v).severity as *const c_char).unwrap_or_default(),
+                summary: cstr_to_string((*v).summary as *const c_char).unwrap_or_default(),
+            });
+            v = (*v).next;
+        }
+        out.push(PackageInfo {
+            name: cstr_to_string((*ptr).name as *const c_char).unwrap_or_default(),
+            version: cstr_to_string((*ptr).version as *const c_char).unwrap_or_default(),
+            declared: cstr_to_string((*ptr).declared as *const c_char).unwrap_or_default(),
+            resolved: (*ptr).resolved,
+            ecosystem: cstr_to_string((*ptr).ecosystem as *const c_char).unwrap_or_default(),
+            purl: cstr_to_string((*ptr).purl as *const c_char).unwrap_or_default(),
+            license: cstr_to_string((*ptr).license as *const c_char).unwrap_or_default(),
+            source: cstr_to_string((*ptr).source as *const c_char).unwrap_or_default(),
+            first_party: (*ptr).first_party,
+            vulnerabilities,
+        });
+        ptr = (*ptr).next;
     }
     out
 }
@@ -992,6 +1070,10 @@ impl Connection {
             let identification_files =
                 walk_ident_files(sys::asp_analysis_result_get_identification_file(c_result));
 
+            // Authorship facts and the dependency manifest
+            let authors = walk_authors(sys::asp_analysis_result_get_author(c_result));
+            let packages = walk_packages(sys::asp_analysis_result_get_package(c_result));
+
             sys::asp_analysis_result_free(c_result);
 
             Ok(AnalysisResult {
@@ -1001,6 +1083,8 @@ impl Connection {
                 connected_symbol_data,
                 symbol_calls,
                 identification_files,
+                authors,
+                packages,
             })
         }
     }

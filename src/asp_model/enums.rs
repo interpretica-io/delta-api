@@ -122,6 +122,10 @@ pub enum AnalysisJobKind {
     Defects,
     Identification,
     Dependency,
+    /// Who wrote what, from git blame and the commit history.
+    Authorship,
+    /// The project's declared dependencies, with licenses and advisories.
+    Sbom,
 }
 
 /// Phase of analysis execution (transmitted as integer)

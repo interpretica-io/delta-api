@@ -47,6 +47,16 @@ impl AnalysisJob {
             kind: AnalysisJobKind::Dependency,
         }
     }
+    pub fn authorship() -> Self {
+        AnalysisJob {
+            kind: AnalysisJobKind::Authorship,
+        }
+    }
+    pub fn sbom() -> Self {
+        AnalysisJob {
+            kind: AnalysisJobKind::Sbom,
+        }
+    }
 }
 
 /// An analysis request / handle
