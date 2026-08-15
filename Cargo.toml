@@ -1,6 +1,6 @@
 [package]
 name = "delta-api"
-version = "1.8.0"
+version = "1.9.0"
 edition = "2021"
 links = "asp"
 
@@ -8,7 +8,7 @@ links = "asp"
 # place to bump the asp version. Env vars ASP_GIT_URL / ASP_GIT_REF override it.
 [package.metadata.asp]
 git-url = "https://github.com/interpretica-io/asp"
-git-ref = "1.13.0"
+git-ref = "1.15.0"
 
 [dependencies]
 serde = { version = "1.0", features = ["derive"] }
