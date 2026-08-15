@@ -27,10 +27,12 @@
 pub mod address;
 pub mod analysis;
 pub mod author;
+pub mod compliance;
 pub mod enums;
 pub mod env;
 pub mod file;
 pub mod identification;
+pub mod metrics;
 pub mod package;
 pub mod report;
 pub mod result;

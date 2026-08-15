@@ -37,6 +37,8 @@ use log::{debug, error};
 use super::address::Address;
 use super::analysis::{Analysis, AnalysisOutline, AnalysisState};
 use super::author::{AuthorFinding, AuthorInfo};
+use super::compliance::ComplianceRule;
+use super::metrics::FunctionMetrics;
 use super::enums::{
     AnalysisJobKind, AnalysisPhase, Compiler, Cpu, IdentificationStatus, Language, Os,
     ReportSeverity, ResourceType, SymbolOrigin,
@@ -177,6 +179,7 @@ fn to_c_job_kind(k: &AnalysisJobKind) -> u32 {
         AnalysisJobKind::Dependency => 3,
         AnalysisJobKind::Authorship => 4,
         AnalysisJobKind::Sbom => 5,
+        AnalysisJobKind::Metrics => 6,
     }
 }
 
@@ -608,6 +611,44 @@ unsafe fn walk_packages(head: *mut sys::asp_package) -> Vec<PackageInfo> {
             source: cstr_to_string((*ptr).source as *const c_char).unwrap_or_default(),
             first_party: (*ptr).first_party,
             vulnerabilities,
+        });
+        ptr = (*ptr).next;
+    }
+    out
+}
+
+/// Convert a `*mut asp_compliance_rule` linked list.
+unsafe fn walk_compliance(head: *mut sys::asp_compliance_rule) -> Vec<ComplianceRule> {
+    let mut out = Vec::new();
+    let mut ptr = head;
+    while !ptr.is_null() {
+        out.push(ComplianceRule {
+            rule: cstr_to_string((*ptr).rule as *const c_char).unwrap_or_default(),
+            category: cstr_to_string((*ptr).category as *const c_char).unwrap_or_default(),
+            checks: cstr_to_string((*ptr).checks as *const c_char).unwrap_or_default(),
+            findings: (*ptr).findings,
+        });
+        ptr = (*ptr).next;
+    }
+    out
+}
+
+/// Convert a `*mut asp_function_metrics` linked list.
+unsafe fn walk_metrics(head: *mut sys::asp_function_metrics) -> Vec<FunctionMetrics> {
+    let mut out = Vec::new();
+    let mut ptr = head;
+    while !ptr.is_null() {
+        out.push(FunctionMetrics {
+            name: cstr_to_string((*ptr).name as *const c_char).unwrap_or_default(),
+            file: cstr_to_string((*ptr).file as *const c_char).unwrap_or_default(),
+            line: (*ptr).line,
+            lines: (*ptr).lines,
+            cyclomatic: (*ptr).cyclomatic,
+            cognitive: (*ptr).cognitive,
+            nesting: (*ptr).nesting,
+            parameters: (*ptr).parameters,
+            statements: (*ptr).statements,
+            returns: (*ptr).returns,
         });
         ptr = (*ptr).next;
     }
@@ -1073,6 +1114,14 @@ impl Connection {
             // Authorship facts and the dependency manifest
             let authors = walk_authors(sys::asp_analysis_result_get_author(c_result));
             let packages = walk_packages(sys::asp_analysis_result_get_package(c_result));
+            let compliance =
+                walk_compliance(sys::asp_analysis_result_get_compliance(c_result));
+            // The standard's token rides the result struct itself, the same
+            // way sarif_text does.
+            let compliance_standard =
+                cstr_to_string((*c_result).compliance_standard as *const c_char)
+                    .unwrap_or_default();
+            let metrics = walk_metrics(sys::asp_analysis_result_get_metrics(c_result));
 
             sys::asp_analysis_result_free(c_result);
 
@@ -1085,6 +1134,9 @@ impl Connection {
                 identification_files,
                 authors,
                 packages,
+                compliance,
+                compliance_standard,
+                metrics,
             })
         }
     }

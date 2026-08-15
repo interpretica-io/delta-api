@@ -57,6 +57,11 @@ impl AnalysisJob {
             kind: AnalysisJobKind::Sbom,
         }
     }
+    pub fn metrics() -> Self {
+        AnalysisJob {
+            kind: AnalysisJobKind::Metrics,
+        }
+    }
 }
 
 /// An analysis request / handle

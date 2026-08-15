@@ -23,7 +23,9 @@
  */
 
 use super::author::AuthorInfo;
+use super::compliance::ComplianceRule;
 use super::identification::IdentificationFile;
+use super::metrics::FunctionMetrics;
 use super::package::PackageInfo;
 use super::report::Report;
 use super::symbol::{SymbolCall, SymbolLocation};
@@ -50,6 +52,17 @@ pub struct AnalysisResult {
     /// Declared dependencies, when the `sbom` job ran
     #[serde(default)]
     pub packages: Vec<PackageInfo>,
+    /// One row per rule of the enforced standard, when one was enforced —
+    /// including the rules the analyser does not check (`checks` empty).
+    #[serde(default)]
+    pub compliance: Vec<ComplianceRule>,
+    /// The enforced standard's token (e.g. `misra-c-2012`), alongside
+    /// `compliance`; empty when no standard was set.
+    #[serde(default)]
+    pub compliance_standard: String,
+    /// Per-function code metrics, when the `metrics` job ran.
+    #[serde(default)]
+    pub metrics: Vec<FunctionMetrics>,
 }
 
 impl AnalysisResult {

@@ -126,6 +126,8 @@ pub enum AnalysisJobKind {
     Authorship,
     /// The project's declared dependencies, with licenses and advisories.
     Sbom,
+    /// Per-function code metrics: cyclomatic, cognitive, nesting and kin.
+    Metrics,
 }
 
 /// Phase of analysis execution (transmitted as integer)
