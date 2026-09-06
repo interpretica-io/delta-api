@@ -348,11 +348,28 @@ fn build_libasp(asp_dir: &Path, build_subdir: &str, run_make_flag: Option<&str>)
         build_in_docker(asp_dir, run_make_flag);
     }
 
-    assert!(
-        has_libasp(&lib_dir),
-        "libasp was not produced in {}",
-        lib_dir.display()
-    );
+    if !has_libasp(&lib_dir) {
+        // Say what is there and what was wanted: the usual way to get here
+        // is a build that succeeded and produced the other kind of library,
+        // and "not produced" alone sends people to read the wrong log.
+        let present = fs::read_dir(&lib_dir)
+            .map(|rd| {
+                rd.flatten()
+                    .map(|e| e.file_name().to_string_lossy().into_owned())
+                    .collect::<Vec<_>>()
+                    .join(", ")
+            })
+            .unwrap_or_else(|_| "<no such directory>".to_string());
+        let wanted = if links_statically() {
+            "libasp.a and libnng.a (a static build: run_make.sh --static)"
+        } else {
+            "a shared libasp"
+        };
+        panic!(
+            "libasp was not produced in {}: wanted {wanted}, found: {present}",
+            lib_dir.display()
+        );
+    }
     colocate_nng(&build_dir, &lib_dir);
     lib_dir
 }
