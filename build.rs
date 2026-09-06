@@ -50,10 +50,18 @@ use std::path::{Path, PathBuf};
 use std::process::Command;
 use std::time::Duration;
 
-/// asp's own build image and the Dockerfile that produces it (relative to the
-/// asp source root). Override the image name/tag with `ASP_DOCKER_IMAGE`.
-const ASP_DOCKER_IMAGE_DEFAULT: &str = "asp:ubuntu_2404";
-const ASP_DOCKERFILE: &str = "tools/build-env/Dockerfile_ubuntu_2404";
+/// asp's build image for Linux and the Dockerfile that produces it (relative
+/// to the asp source root). Override the image name/tag with `ASP_DOCKER_IMAGE`.
+///
+/// Ubuntu 22.04 rather than asp's own 24.04 development image: a shared
+/// library carries the glibc symbol versions of the system it was built on
+/// and loads only on systems at least that new. The release that ships this
+/// library is built on 22.04 and refuses to package a library it cannot load
+/// there, so the library has to come from 22.04 too. Building on the oldest
+/// base costs nothing on newer targets; building on the newest fails on every
+/// older one.
+const ASP_DOCKER_IMAGE_DEFAULT: &str = "asp:ubuntu_2204";
+const ASP_DOCKERFILE: &str = "tools/build-env/Dockerfile_ubuntu_2204";
 
 fn main() {
     let manifest_dir = PathBuf::from(env::var("CARGO_MANIFEST_DIR").unwrap());
@@ -99,16 +107,27 @@ fn main() {
 
     // ── Tell Cargo where to find and link libasp ──────────────────────────
     println!("cargo:rustc-link-search=native={}", lib_dir.display());
-    println!("cargo:rustc-link-lib=dylib=asp");
-    // Bake the library dir as an rpath so this crate's OWN artifacts (its tests,
-    // benches and the delta-server bin) can load libasp at runtime. This does
-    // not propagate to downstream crates — they use DEP_ASP_LIB_DIR below.
-    println!("cargo:rustc-link-arg=-Wl,-rpath,{}", lib_dir.display());
+    if links_statically() {
+        // Both archives: a static libasp does not contain nng, and asp's
+        // install puts libnng.a beside it for exactly this line. Nothing is
+        // published as a library dir — there is no library to find at runtime,
+        // and an rpath into the build tree would only mislead whoever reads
+        // the binary.
+        println!("cargo:rustc-link-lib=static=asp");
+        println!("cargo:rustc-link-lib=static=nng");
+    } else {
+        println!("cargo:rustc-link-lib=dylib=asp");
+        // Bake the library dir as an rpath so this crate's OWN artifacts (its
+        // tests, benches and the delta-server bin) can load libasp at runtime.
+        // This does not propagate to downstream crates — they use
+        // DEP_ASP_LIB_DIR below.
+        println!("cargo:rustc-link-arg=-Wl,-rpath,{}", lib_dir.display());
 
-    // Publish the library directory as DEP_ASP_LIB_DIR so that downstream
-    // build scripts (e.g. delta-cli/build.rs) can add the rpath to the final
-    // binary without duplicating the search logic.
-    println!("cargo:lib_dir={}", lib_dir.display());
+        // Publish the library directory as DEP_ASP_LIB_DIR so that downstream
+        // build scripts (e.g. delta-cli/build.rs) can add the rpath to the
+        // final binary without duplicating the search logic.
+        println!("cargo:lib_dir={}", lib_dir.display());
+    }
 
     println!(
         "cargo:rerun-if-changed={}",
@@ -279,17 +298,34 @@ fn target_build() -> (String, Option<&'static str>) {
         ("macos", "aarch64") => ("build-mac-arm64".to_string(), Some("--mac-arm64")),
         ("macos", _) => ("build-mac-x86_64".to_string(), Some("--mac-x86_64")),
         ("windows", _) => ("build-win32".to_string(), Some("--win32")),
-        // Native (glibc) build for Linux and anything else.
-        _ => ("build".to_string(), None),
+        // Native (glibc) build for Linux and anything else — as archives, see
+        // `links_statically`.
+        _ => ("build".to_string(), Some("--static")),
     }
+}
+
+/// Whether libasp goes into the binary rather than beside it.
+///
+/// On Linux it does: a shared libasp is one more file for every consumer to
+/// ship, find at load time and keep in step, and it carries the glibc of the
+/// machine it was built on. Linked in, there is nothing to ship and nothing
+/// to find, and a glibc mismatch fails at link time on the build host rather
+/// than at start-up on a customer's. macOS and Windows keep the dylib: that is
+/// where development happens, and a dylib is what their tooling expects.
+fn links_statically() -> bool {
+    !matches!(
+        env::var("CARGO_CFG_TARGET_OS").as_deref(),
+        Ok("macos") | Ok("windows")
+    )
 }
 
 /// Build libasp if it is not already present, and return its directory.
 ///
-/// We use asp's `run_make.sh`, which `ninja install`s into `<build>/fs`, so the
-/// self-contained library (asp links nng statically, install rpath `$ORIGIN`/
-/// `@loader_path`) lives in `<build>/fs/lib` — not the build tree's `<build>/lib`,
-/// whose libasp references a non-co-located libnng and fails to load at runtime.
+/// We use asp's `run_make.sh`, which `ninja install`s into `<build>/fs`, so what
+/// this crate links lives in `<build>/fs/lib`: `libasp.a` + `libnng.a` where
+/// libasp is linked in (see `links_statically`), a self-contained dylib with
+/// install rpath `@loader_path` elsewhere — not the build tree's `<build>/lib`,
+/// whose dylib references a non-co-located libnng and fails to load at runtime.
 fn build_libasp(asp_dir: &Path, build_subdir: &str, run_make_flag: Option<&str>) -> PathBuf {
     let build_dir = asp_dir.join(build_subdir);
     let lib_dir = build_dir.join("fs").join("lib");
@@ -425,6 +461,10 @@ fn build_native(asp_dir: &Path, run_make_flag: Option<&str>) {
 }
 
 fn has_libasp(dir: &Path) -> bool {
+    if links_statically() {
+        // Both, or it is not a build this crate can link.
+        return dir.join("libasp.a").exists() && dir.join("libnng.a").exists();
+    }
     dir.join("libasp.dylib").exists()
         || dir.join("libasp.so").exists()
         || dir.join("asp.dll").exists()
