@@ -38,7 +38,6 @@ use super::address::Address;
 use super::analysis::{Analysis, AnalysisOutline, AnalysisState};
 use super::author::{AuthorFinding, AuthorInfo};
 use super::compliance::ComplianceRule;
-use super::metrics::FunctionMetrics;
 use super::enums::{
     AnalysisJobKind, AnalysisPhase, Compiler, Cpu, IdentificationStatus, Language, Os,
     ReportSeverity, ResourceType, SymbolOrigin,
@@ -46,10 +45,12 @@ use super::enums::{
 use super::env::Environment;
 use super::file::File;
 use super::identification::{IdentificationFile, IdentificationReport};
+use super::metrics::FunctionMetrics;
 use super::package::{PackageInfo, VulnerabilityInfo};
 use super::report::Report;
 use super::result::AnalysisResult;
 use super::status::{AspError, AspResult};
+use super::suspicion::{Suspicion, SuspicionLine};
 use super::symbol::{Symbol, SymbolCall, SymbolLocation};
 use super::sys;
 use super::workspace::{Workspace, WorkspaceOutline};
@@ -633,6 +634,45 @@ unsafe fn walk_compliance(head: *mut sys::asp_compliance_rule) -> Vec<Compliance
     out
 }
 
+/// Convert a `*mut asp_suspicion` linked list.
+///
+/// The classification comes across as the analyser spelled it — no mapping
+/// onto an enumeration here, because a rule or a category added on the
+/// analyser side has to reach a client built before it rather than be dropped
+/// on the floor by a conversion that knows nothing about it.
+unsafe fn walk_suspicions(head: *mut sys::asp_suspicion) -> Vec<Suspicion> {
+    let mut out = Vec::new();
+    let mut ptr = head;
+    while !ptr.is_null() {
+        let mut snippet = Vec::new();
+        let mut l = (*ptr).snippet;
+        while !l.is_null() {
+            snippet.push(SuspicionLine {
+                line: (*l).line,
+                text: cstr_to_string((*l).text as *const c_char).unwrap_or_default(),
+                marked: (*l).marked,
+            });
+            l = (*l).next;
+        }
+        out.push(Suspicion {
+            category: cstr_to_string((*ptr).category as *const c_char).unwrap_or_default(),
+            confidence: cstr_to_string((*ptr).confidence as *const c_char).unwrap_or_default(),
+            rule: cstr_to_string((*ptr).rule as *const c_char).unwrap_or_default(),
+            rule_id: cstr_to_string((*ptr).rule_id as *const c_char).unwrap_or_default(),
+            title: cstr_to_string((*ptr).title as *const c_char).unwrap_or_default(),
+            odd: cstr_to_string((*ptr).odd as *const c_char).unwrap_or_default(),
+            check: cstr_to_string((*ptr).check as *const c_char).unwrap_or_default(),
+            file: cstr_to_string((*ptr).file as *const c_char).unwrap_or_default(),
+            line: (*ptr).line,
+            end_line: (*ptr).end_line,
+            column: (*ptr).column,
+            snippet,
+        });
+        ptr = (*ptr).next;
+    }
+    out
+}
+
 /// Convert a `*mut asp_function_metrics` linked list.
 unsafe fn walk_metrics(head: *mut sys::asp_function_metrics) -> Vec<FunctionMetrics> {
     let mut out = Vec::new();
@@ -762,11 +802,7 @@ impl Connection {
     /// connecting — the obvious reading of the API — leaves every send and
     /// receive unbounded, so one unanswered request hangs the caller for good
     /// and, worse, ties up an nng task for the life of the process.
-    pub fn connect_nng_with_timeouts(
-        url: &str,
-        send_ms: i32,
-        recv_ms: i32,
-    ) -> AspResult<Self> {
+    pub fn connect_nng_with_timeouts(url: &str, send_ms: i32, recv_ms: i32) -> AspResult<Self> {
         debug!(
             "ASP connecting (NNG) to {} (send {} ms, recv {} ms)",
             url, send_ms, recv_ms
@@ -1114,14 +1150,16 @@ impl Connection {
             // Authorship facts and the dependency manifest
             let authors = walk_authors(sys::asp_analysis_result_get_author(c_result));
             let packages = walk_packages(sys::asp_analysis_result_get_package(c_result));
-            let compliance =
-                walk_compliance(sys::asp_analysis_result_get_compliance(c_result));
+            let compliance = walk_compliance(sys::asp_analysis_result_get_compliance(c_result));
             // The standard's token rides the result struct itself, the same
             // way sarif_text does.
             let compliance_standard =
                 cstr_to_string((*c_result).compliance_standard as *const c_char)
                     .unwrap_or_default();
             let metrics = walk_metrics(sys::asp_analysis_result_get_metrics(c_result));
+            // Beside the findings, never among them: the suspicious places
+            // are what the run wants read, not what it claims is wrong.
+            let suspicions = walk_suspicions(sys::asp_analysis_result_get_suspicion(c_result));
 
             sys::asp_analysis_result_free(c_result);
 
@@ -1137,6 +1175,7 @@ impl Connection {
                 compliance,
                 compliance_standard,
                 metrics,
+                suspicions,
             })
         }
     }

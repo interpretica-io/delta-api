@@ -28,6 +28,7 @@ use super::identification::IdentificationFile;
 use super::metrics::FunctionMetrics;
 use super::package::PackageInfo;
 use super::report::Report;
+use super::suspicion::Suspicion;
 use super::symbol::{SymbolCall, SymbolLocation};
 use serde::{Deserialize, Serialize};
 
@@ -63,6 +64,11 @@ pub struct AnalysisResult {
     /// Per-function code metrics, when the `metrics` job ran.
     #[serde(default)]
     pub metrics: Vec<FunctionMetrics>,
+    /// Suspicious places, when the analysis was asked for them. Kept apart
+    /// from `reports` on purpose: these are not defects, and a gate that
+    /// counts defects must not count them.
+    #[serde(default)]
+    pub suspicions: Vec<Suspicion>,
 }
 
 impl AnalysisResult {
@@ -72,5 +78,9 @@ impl AnalysisResult {
 
     pub fn report_count(&self) -> usize {
         self.reports.len()
+    }
+
+    pub fn suspicion_count(&self) -> usize {
+        self.suspicions.len()
     }
 }

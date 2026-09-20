@@ -37,6 +37,7 @@ pub mod package;
 pub mod report;
 pub mod result;
 pub mod status;
+pub mod suspicion;
 pub mod symbol;
 pub mod workspace;
 
