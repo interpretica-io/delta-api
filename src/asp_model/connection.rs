@@ -572,6 +572,14 @@ unsafe fn walk_authors(head: *mut sys::asp_author) -> Vec<AuthorInfo> {
             days: (*ptr).days,
             added: (*ptr).added,
             removed: (*ptr).removed,
+            // Surviving blame lines. Read as 0 until the pinned asp headers
+            // carry an `owned_lines` field on `asp_author`; once the analyzer
+            // ships it (see the visao spec) and the asp ref is bumped, this
+            // becomes `(*ptr).owned_lines`. Keeping it 0 here lets delta-api,
+            // the plugin and the UI ship the ownership/bus-factor plumbing
+            // ahead of the analyzer, with the feature simply dark until data
+            // arrives.
+            owned_lines: 0,
             file_changes: (*ptr).file_changes,
             largest_commit: (*ptr).largest_commit,
             median_commit: (*ptr).median_commit,

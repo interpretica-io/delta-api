@@ -4,6 +4,13 @@
 //! names who last touched a line, not who introduced a defect, and commit and
 //! line counts measure volume rather than value. Scoring is a consumer's
 //! decision to make, and to answer for.
+//!
+//! `owned_lines` is a fact of the same kind: how many surviving lines `git
+//! blame` attributes to an author right now. It is not a ranking — but it is
+//! the raw material a consumer needs to answer two structural questions about
+//! the *code*, not about the people: how concentrated knowledge is (ownership
+//! share) and how few departures would lose it (bus factor). Those derivations
+//! are the consumer's to make; this module only reports the line counts.
 
 use serde::{Deserialize, Serialize};
 
@@ -40,6 +47,15 @@ pub struct AuthorInfo {
     /// Lines removed.
     #[serde(default)]
     pub removed: u32,
+    /// Surviving lines `git blame` attributes to this author across the
+    /// examined tree — the lines they last touched that are still present.
+    /// Unlike `added`/`removed` (churn over history), this is current
+    /// ownership, and is what a consumer sums to derive an ownership share and
+    /// a bus factor. Zero when the blame/ownership part of the job did not run
+    /// (same convention as the commit facts); an author with findings but zero
+    /// everything else is that case, not someone who owns no lines.
+    #[serde(default)]
+    pub owned_lines: u32,
     /// File changes across commits.
     #[serde(default)]
     pub file_changes: u32,
