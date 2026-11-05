@@ -1,16 +1,14 @@
 //! Authorship facts, as the `authorship` job reports them.
 //!
-//! Facts and counts only — there is deliberately no score here. `git blame`
-//! names who last touched a line, not who introduced a defect, and commit and
-//! line counts measure volume rather than value. Scoring is a consumer's
-//! decision to make, and to answer for.
+//! The job reports facts and counts. It does not score authors. `git blame`
+//! names who last touched a line. It does not name who introduced a defect.
+//! Commit and line counts measure volume. A consumer that wants a score must
+//! compute it and answer for it.
 //!
-//! `owned_lines` is a fact of the same kind: how many surviving lines `git
-//! blame` attributes to an author right now. It is not a ranking — but it is
-//! the raw material a consumer needs to answer two structural questions about
-//! the *code*, not about the people: how concentrated knowledge is (ownership
-//! share) and how few departures would lose it (bus factor). Those derivations
-//! are the consumer's to make; this module only reports the line counts.
+//! `owned_lines` is one such fact: the surviving lines `git blame` attributes
+//! to an author now. A consumer sums it to derive two properties of the code:
+//! the ownership share, and the bus factor (how few authors hold a given
+//! share). This module reports the line counts only.
 
 use serde::{Deserialize, Serialize};
 
@@ -23,11 +21,11 @@ pub struct AuthorFinding {
     pub count: u32,
 }
 
-/// One author, as git records them, with what the run attributed to them.
+/// One author as git records them, with what the run attributed to them.
 ///
-/// The commit facts mirror `asp_author`: they are all zero when the history
-/// part of the job did not run, which is not the same as an author who made
-/// zero commits — the findings list tells the two apart.
+/// The commit facts mirror `asp_author`. They are all zero when the history
+/// part of the job did not run. An author who made zero commits looks the
+/// same, so use the findings list to tell the two apart.
 #[derive(Serialize, Deserialize, PartialEq, Clone, Debug, Default)]
 pub struct AuthorInfo {
     /// Author name as git records it.
@@ -48,12 +46,11 @@ pub struct AuthorInfo {
     #[serde(default)]
     pub removed: u32,
     /// Surviving lines `git blame` attributes to this author across the
-    /// examined tree — the lines they last touched that are still present.
-    /// Unlike `added`/`removed` (churn over history), this is current
-    /// ownership, and is what a consumer sums to derive an ownership share and
-    /// a bus factor. Zero when the blame/ownership part of the job did not run
-    /// (same convention as the commit facts); an author with findings but zero
-    /// everything else is that case, not someone who owns no lines.
+    /// examined tree. These are the lines they last touched that still exist.
+    /// `added`/`removed` count churn over history; this counts current
+    /// ownership. A consumer sums it to derive the ownership share and the bus
+    /// factor. It is zero when the blame part of the job did not run, the same
+    /// convention as the commit facts.
     #[serde(default)]
     pub owned_lines: u32,
     /// File changes across commits.
