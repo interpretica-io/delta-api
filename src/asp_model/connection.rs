@@ -222,6 +222,18 @@ fn from_c_symbol_origin(v: u32) -> SymbolOrigin {
     }
 }
 
+/// Map the C `asp_symbol_kind` enum to its token. `None` for unknown, so the
+/// field is simply absent rather than carrying a meaningless value.
+fn from_c_symbol_kind(v: u32) -> Option<String> {
+    match v {
+        1 => Some("function".to_string()),
+        2 => Some("type".to_string()),
+        3 => Some("macro".to_string()),
+        4 => Some("variable".to_string()),
+        _ => None,
+    }
+}
+
 // ─────────────────────────────────────────────────────────────────────────────
 // Rust → C object builders
 // ─────────────────────────────────────────────────────────────────────────────
@@ -443,6 +455,12 @@ unsafe fn walk_symbols(head: *mut sys::asp_symbol) -> Vec<Symbol> {
             namespace: cstr_to_string(sys::asp_symbol_get_namespace(ptr)),
             resource_type: ResourceType(sys::asp_symbol_get_resource_type(ptr)),
             origin: from_c_symbol_origin(sys::asp_symbol_get_origin(ptr)),
+            kind: from_c_symbol_kind(sys::asp_symbol_get_kind(ptr) as u32),
+            // These getters return freshly allocated strings (strdup) → free.
+            qualified_name: cstr_to_string_free(sys::asp_symbol_get_qualified_name(ptr)),
+            signature: cstr_to_string_free(sys::asp_symbol_get_signature(ptr)),
+            def_file: cstr_to_string_free(sys::asp_symbol_get_def_file(ptr)),
+            def_line: sys::asp_symbol_get_def_line(ptr),
         });
         ptr = sys::asp_symbol_next(ptr);
     }
@@ -467,6 +485,7 @@ unsafe fn walk_files(head: *mut sys::asp_file) -> Vec<File> {
         out.push(File {
             address: Address::local_file(path),
             env: None,
+            hash: cstr_to_string_free(sys::asp_file_get_hash(ptr)),
         });
         ptr = sys::asp_file_next(ptr);
     }
@@ -537,6 +556,7 @@ unsafe fn walk_ident_files(head: *mut sys::asp_identification_file) -> Vec<Ident
             Some(File {
                 address: Address::local_file(path),
                 env: None,
+                hash: cstr_to_string_free(sys::asp_file_get_hash(c_file)),
             })
         };
         let reports = walk_ident_reports(sys::asp_identification_file_get_report(ptr));

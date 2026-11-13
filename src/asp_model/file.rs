@@ -32,6 +32,10 @@ pub struct File {
     pub address: Address,
     #[serde(skip_serializing_if = "Option::is_none")]
     pub env: Option<Environment>,
+    /// Content hash, for incremental analysis; `None` when the analyzer
+    /// reports none.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub hash: Option<String>,
 }
 
 impl File {
@@ -40,6 +44,7 @@ impl File {
         File {
             address: Address::local_file(path),
             env: None,
+            hash: None,
         }
     }
 

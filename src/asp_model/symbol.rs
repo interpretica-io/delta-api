@@ -27,12 +27,42 @@ use super::file::File;
 use serde::{Deserialize, Serialize};
 
 /// A global symbol (variable or function)
-#[derive(Serialize, Deserialize, PartialEq, Clone, Debug, Default)]
+#[derive(Serialize, Deserialize, Clone, Debug, Default)]
 pub struct Symbol {
     pub namespace: Option<String>,
     pub name: Option<String>,
     pub resource_type: ResourceType,
     pub origin: SymbolOrigin,
+    /// What the entity is: `function` / `type` / `macro` / `variable`.
+    /// `None` when the analyzer did not say.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub kind: Option<String>,
+    /// Stable identity across runs (mangled or fully-qualified), when the
+    /// analyzer provides one. `None` otherwise — compose from namespace+name.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub qualified_name: Option<String>,
+    /// Declaration/signature text, when known.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub signature: Option<String>,
+    /// File the symbol is defined in, for a symbol that came from source.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub def_file: Option<String>,
+    /// Line it is defined on; `0` when unknown.
+    #[serde(default)]
+    pub def_line: u32,
+}
+
+/// Identity excludes the definition site, the signature and the kind — where a
+/// symbol sits and how it is spelled does not change which symbol it is. This
+/// mirrors libasp, where the hash folds in only name, namespace and the
+/// resource flags, and keeps dedup in `symbols.rs` behaving as before.
+impl PartialEq for Symbol {
+    fn eq(&self, other: &Self) -> bool {
+        self.namespace == other.namespace
+            && self.name == other.name
+            && self.resource_type == other.resource_type
+            && self.origin == other.origin
+    }
 }
 
 /// A location group containing files and symbols
