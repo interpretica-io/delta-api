@@ -79,7 +79,9 @@ impl ControlState {
             Ok(hex) => match ControlKey::from_seed_hex(&hex) {
                 Ok(k) => k,
                 Err(_) => {
-                    log::error!("DELTA_CONTROL_KEY is not a 64-hex-char seed; generating ephemeral key");
+                    log::error!(
+                        "DELTA_CONTROL_KEY is not a 64-hex-char seed; generating ephemeral key"
+                    );
                     ControlKey::generate()
                 }
             },
@@ -183,10 +185,15 @@ pub enum Response {
     IsAlive(ConnAliveStatus),
     ListNodes(Vec<String>),
     /// The control-plane public key (hex), reply to [`Request::ControlPubkey`].
-    ControlPubkey { pubkey: String },
+    ControlPubkey {
+        pubkey: String,
+    },
     /// A signed command envelope plus the sequence embedded in it, reply to
     /// [`Request::SignCommand`].
-    SignedCommand { envelope: String, seq: u64 },
+    SignedCommand {
+        envelope: String,
+        seq: u64,
+    },
     /// Successful reply to [`Request::Ping`].
     Pong,
     /// The request line could not be parsed or executed.
@@ -303,7 +310,8 @@ async fn handle_connection(
                 let control = control.clone();
                 // NodePool operations block on SSH I/O; keep them off the
                 // async runtime worker thread.
-                match tokio::task::spawn_blocking(move || handle_request(&pool, &control, req)).await
+                match tokio::task::spawn_blocking(move || handle_request(&pool, &control, req))
+                    .await
                 {
                     Ok(resp) => resp,
                     Err(join_err) => Response::Error {

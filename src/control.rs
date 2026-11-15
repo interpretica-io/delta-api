@@ -150,14 +150,11 @@ mod tests {
     /// Known-answer vector produced by tools/delta-sign.py with the fixed seed
     /// 01,02,…,20. Ed25519 is deterministic, so the Rust signer must reproduce
     /// the exact public key and signature the C agent (TweetNaCl) verifies.
-    const SEED_HEX: &str =
-        "0102030405060708090a0b0c0d0e0f101112131415161718191a1b1c1d1e1f20";
-    const PUB_HEX: &str =
-        "79b5562e8fe654f94078b112e8a98ba7901f853ae695bed7e0e3910bad049664";
+    const SEED_HEX: &str = "0102030405060708090a0b0c0d0e0f101112131415161718191a1b1c1d1e1f20";
+    const PUB_HEX: &str = "79b5562e8fe654f94078b112e8a98ba7901f853ae695bed7e0e3910bad049664";
     // payload bytes: {"commands":[{"action":"disable"}]}
     const PAYLOAD: &str = "{\"commands\":[{\"action\":\"disable\"}]}";
-    const SIG_HEX: &str =
-        "d447fec51131a185847e26d49327a0fb52ff3695575faff28f34d3eefde7fb48\
+    const SIG_HEX: &str = "d447fec51131a185847e26d49327a0fb52ff3695575faff28f34d3eefde7fb48\
          de9504dba41c913a8e26f0affdb31c5b72d0b56effdd9b3e600a03000b5a1d0c";
 
     #[test]

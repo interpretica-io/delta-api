@@ -199,8 +199,16 @@ impl NodePool {
     fn subject_layout(subject: &DeploySubject) -> (&'static str, &'static str, &'static str) {
         match subject {
             // (working dir, uploaded archive path, binary)
-            DeploySubject::Sa => ("/tmp/visao", "/tmp/visao-archive.tar.xz", "/tmp/visao/bin/visao"),
-            DeploySubject::Delta => ("/tmp/delta", "/tmp/delta-archive.tar.xz", "/tmp/delta/bin/delta"),
+            DeploySubject::Sa => (
+                "/tmp/visao",
+                "/tmp/visao-archive.tar.xz",
+                "/tmp/visao/bin/visao",
+            ),
+            DeploySubject::Delta => (
+                "/tmp/delta",
+                "/tmp/delta-archive.tar.xz",
+                "/tmp/delta/bin/delta",
+            ),
         }
     }
 
@@ -363,9 +371,13 @@ impl NodePool {
         if v.is_empty() {
             return v;
         }
-        let bad = v
-            .chars()
-            .any(|c| c.is_control() || matches!(c, '\'' | '"' | '`' | '$' | '\\' | ';' | '&' | '|' | '<' | '>' | '(' | ')' | ' '));
+        let bad = v.chars().any(|c| {
+            c.is_control()
+                || matches!(
+                    c,
+                    '\'' | '"' | '`' | '$' | '\\' | ';' | '&' | '|' | '<' | '>' | '(' | ')' | ' '
+                )
+        });
         if bad {
             error!("Dropping delta run parameter with unsafe characters: {}", v);
             String::new()
@@ -483,7 +495,10 @@ mod tests {
         ]);
         let args = pool.delta_run_args(&node);
         assert!(args.contains("--interval 30"), "{args}");
-        assert!(args.contains("--server 'https://c.example/ingest'"), "{args}");
+        assert!(
+            args.contains("--server 'https://c.example/ingest'"),
+            "{args}"
+        );
         assert!(args.contains("--token 'abc123'"), "{args}");
         assert!(args.contains("--verify-key '79b5562e"), "{args}");
         assert!(args.contains("--stun 'stun.l.google.com:19302'"), "{args}");
@@ -503,10 +518,7 @@ mod tests {
     fn drops_shell_injection_in_params() {
         // A collector URL trying to break out of its single quotes is dropped,
         // so --server is simply absent rather than injected.
-        let (pool, node) = node_with(&[(
-            NodeParameters::CollectorUrl,
-            "https://x/'; rm -rf / #",
-        )]);
+        let (pool, node) = node_with(&[(NodeParameters::CollectorUrl, "https://x/'; rm -rf / #")]);
         let args = pool.delta_run_args(&node);
         assert!(!args.contains("--server"), "{args}");
         assert!(!args.contains("rm -rf"), "{args}");
